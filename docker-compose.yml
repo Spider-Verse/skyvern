@@ -21,7 +21,12 @@ services:
       retries: 5
 
   skyvern:
-    image: public.ecr.aws/skyvern/skyvern:latest
+    build: .
+<<<<<<< HEAD
+    # image: public.ecr.aws/skyvern/skyvern:latest
+=======
+    # image: public.ecr.aws/t6d4b5t4/skyvern:latest
+>>>>>>> 0d20ea8 (initial)
     restart: on-failure
     # comment out if you want to externally call skyvern API
     ports:
@@ -30,12 +35,13 @@ services:
       - ./artifacts:/data/artifacts
       - ./videos:/data/videos
       - ./har:/data/har
+      - ./browser:/data/browser
       - ./.streamlit:/app/.streamlit
     environment:
       - DATABASE_STRING=postgresql+psycopg://skyvern:skyvern@postgres:5432/skyvern
       - BROWSER_TYPE=chromium-headful
       - ENABLE_OPENAI=true
-      - OPENAI_API_KEY=<your_openai_key>
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
       # If you want to use other LLM provider, like azure and anthropic:
       # - ENABLE_ANTHROPIC=true
       # - LLM_KEY=ANTHROPIC_CLAUDE3_OPUS
@@ -56,7 +62,9 @@ services:
       retries: 5
 
   skyvern-ui:
-    image: public.ecr.aws/skyvern/skyvern-ui:latest
+    # image: public.ecr.aws/skyvern/skyvern-ui:latest
+    build:
+      dockerfile: Dockerfile.ui
     restart: on-failure
     ports:
       - 8080:8080
@@ -73,18 +81,18 @@ services:
       skyvern:
         condition: service_healthy
   
-  streamlit:
-    image: public.ecr.aws/skyvern/skyvern:latest
-    restart: on-failure
-    ports:
-      - 8501:8501
-    volumes:
-      - ./artifacts:/data/artifacts
-      - ./videos:/data/videos
-      - ./har:/data/har
-      - ./.streamlit:/app/.streamlit
-    command: ["/bin/bash", "entrypoint-streamlit.sh"]
-    depends_on:
-      skyvern:
-        condition: service_healthy
+  # streamlit:
+  #   image: public.ecr.aws/skyvern/skyvern:latest
+  #   restart: on-failure
+  #   ports:
+  #     - 8501:8501
+  #   volumes:
+  #     - ./artifacts:/data/artifacts
+  #     - ./videos:/data/videos
+  #     - ./har:/data/har
+  #     - ./.streamlit:/app/.streamlit
+  #   command: ["/bin/bash", "entrypoint-streamlit.sh"]
+  #   depends_on:
+  #     skyvern:
+  #       condition: service_healthy
 

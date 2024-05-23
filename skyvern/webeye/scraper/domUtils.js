@@ -717,6 +717,7 @@ async function buildTreeFromBody(frame = "main.frame", open_select = false) {
     var elementTagNameLower = element.tagName.toLowerCase();
     element.setAttribute("unique_id", element_id);
 
+
     const attrs = {};
     for (const attr of element.attributes) {
       var attrValue = attr.value;
@@ -865,7 +866,7 @@ async function buildTreeFromBody(frame = "main.frame", open_select = false) {
     // if element is an "a" tag and has a target="_blank" attribute, remove the target attribute
     // We're doing this so that skyvern can do all the navigation in a single page/tab and not open new tab
     if (element.tagName.toLowerCase() === "a") {
-      if (element.getAttribute("target") === "_blank") {
+      if (element.getAttribute("target") && element.getAttribute("target").includes("blank")) {
         element.removeAttribute("target");
       }
     }
@@ -1453,3 +1454,45 @@ function findNodeById(arr, targetId, path = []) {
   }
   return null;
 }
+
+//function countElements(wind) {
+//  let ans = 0
+//
+//  for (let i = 0; i < wind.frames.length; i++) {
+//    ans += getVisibleTextInputCount(wind.frames[i]);
+//  }
+//
+//  window.document.querySelectorAll("input, textarea, [contenteditable]").forEach((e) => {
+//    ans += isElementVisible(e);
+//  });
+//
+//  return ans;
+//}
+//
+//function getVisibleTextInputCount(wind) {
+//  let ans = 0
+//
+//  for (let i = 0; i < wind.frames.length; i++) {
+//    ans += getVisibleTextInputCount(wind.frames[i]);
+//  }
+//
+//  window.document.querySelectorAll("input, textarea, [contenteditable]").forEach((e) => {
+//    ans += isElementVisible(e);
+//  });
+//
+//  return ans;
+//}
+//
+//function getVisiblePasteInputCount(wind) {
+//  let ans = 0
+//
+//  for (let frame of wind.frames()) {
+//    ans += getVisiblePasteInputCount(frame);
+//  }
+//
+//  document.querySelectorAll('[contenteditable]').forEach((e) => {
+//    ans += isVisible(e);
+//  });
+//
+//  return ans;
+//}
