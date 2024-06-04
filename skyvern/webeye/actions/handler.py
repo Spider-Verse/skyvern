@@ -1,7 +1,6 @@
 import asyncio
 import json
 import os
-import re
 import uuid
 from typing import Any, Awaitable, Callable, List
 
@@ -13,7 +12,11 @@ from skyvern.constants import REPO_ROOT_DIR
 from skyvern.exceptions import ImaginaryFileUrl, MissingElement, MissingFileUrl, MultipleElementsFound
 from skyvern.forge import app
 from skyvern.forge.prompts import prompt_engine
-from skyvern.forge.sdk.api.files import download_file
+from skyvern.forge.sdk.api.files import (
+    download_file,
+    get_number_of_files_in_directory,
+    get_path_for_workflow_download_directory,
+)
 from skyvern.forge.sdk.models import Step
 from skyvern.forge.sdk.schemas.tasks import Task
 from skyvern.forge.sdk.services.bitwarden import BitwardenConstants
@@ -162,17 +165,42 @@ async def handle_click_action(
     task: Task,
     step: Step,
 ) -> list[ActionResult]:
+    num_downloaded_files_before = 0
+    download_dir = None
+    if task.workflow_run_id:
+        download_dir = get_path_for_workflow_download_directory(task.workflow_run_id)
+        num_downloaded_files_before = get_number_of_files_in_directory(download_dir)
+        LOG.info(
+            "Number of files in download directory before click",
+            num_downloaded_files_before=num_downloaded_files_before,
+            download_dir=download_dir,
+        )
     xpath = await validate_actions_in_dom(action, page, scraped_page)
     await asyncio.sleep(0.3)
     if action.download:
-        return await handle_click_to_download_file_action(action, page, scraped_page)
-    return await chain_click(
-        task,
-        page,
-        action,
-        xpath,
-        timeout=SettingsManager.get_settings().BROWSER_ACTION_TIMEOUT_MS,
-    )
+        results = await handle_click_to_download_file_action(action, page, scraped_page)
+    else:
+        results = await chain_click(
+            task,
+            page,
+            action,
+            xpath,
+            timeout=SettingsManager.get_settings().BROWSER_ACTION_TIMEOUT_MS,
+        )
+
+    if results and task.workflow_run_id and download_dir:
+        LOG.info("Sleeping for 5 seconds to let the download finish")
+        await asyncio.sleep(5)
+        num_downloaded_files_after = get_number_of_files_in_directory(download_dir)
+        LOG.info(
+            "Number of files in download directory after click",
+            num_downloaded_files_after=num_downloaded_files_after,
+            download_dir=download_dir,
+        )
+        if num_downloaded_files_after > num_downloaded_files_before:
+            results[-1].download_triggered = True
+
+    return results
 
 
 async def handle_click_to_download_file_action(
@@ -210,9 +238,12 @@ async def handle_input_text_action(
 
     await locator.clear()
     text = get_actual_value_of_parameter_if_secret(task, action.text)
-    # 1.5 times the time it takes to type the text so it has time to finish typing
-    total_timeout = max(len(text) * TEXT_INPUT_DELAY * 1.5, SettingsManager.get_settings().BROWSER_ACTION_TIMEOUT_MS)
-    await locator.press_sequentially(text, delay=TEXT_INPUT_DELAY, timeout=total_timeout)
+    # 3 times the time it takes to type the text so it has time to finish typing
+    total_timeout = max(len(text) * TEXT_INPUT_DELAY * 3, SettingsManager.get_settings().BROWSER_ACTION_TIMEOUT_MS)
+    delay = TEXT_INPUT_DELAY
+    if total_timeout > 15000:
+        delay = 0
+    await locator.press_sequentially(text, delay=delay, timeout=total_timeout)
     return [ActionSuccess()]
 
 
@@ -484,40 +515,20 @@ async def handle_select_option_action(
             return [ActionFailure(e)]
 
     try:
-        option_xpath = scraped_page.id_to_xpath_dict[action.option.index]
-        match = re.search(r"option\[(\d+)]$", option_xpath)
-        if match:
-            # This means we were trying to select an option xpath, click the option
-            option_index = int(match.group(1))
-            await page.click(
-                f"xpath={xpath}",
-                timeout=SettingsManager.get_settings().BROWSER_ACTION_TIMEOUT_MS,
-            )
-            await page.select_option(
-                xpath,
-                index=option_index,
-                timeout=SettingsManager.get_settings().BROWSER_ACTION_TIMEOUT_MS,
-            )
-            await page.click(
-                f"xpath={xpath}",
-                timeout=SettingsManager.get_settings().BROWSER_ACTION_TIMEOUT_MS,
-            )
-            return [ActionSuccess()]
-        else:
-            # This means the supplied index was for the select element, not a reference to the xpath dict
-            await page.click(
-                f"xpath={xpath}",
-                timeout=SettingsManager.get_settings().BROWSER_ACTION_TIMEOUT_MS,
-            )
-            await page.select_option(
-                xpath,
-                index=action.option.index,
-                timeout=SettingsManager.get_settings().BROWSER_ACTION_TIMEOUT_MS,
-            )
-            await page.click(
-                f"xpath={xpath}",
-                timeout=SettingsManager.get_settings().BROWSER_ACTION_TIMEOUT_MS,
-            )
+        # This means the supplied index was for the select element, not a reference to the xpath dict
+        await page.click(
+            f"xpath={xpath}",
+            timeout=SettingsManager.get_settings().BROWSER_ACTION_TIMEOUT_MS,
+        )
+        await page.select_option(
+            xpath,
+            index=action.option.index,
+            timeout=SettingsManager.get_settings().BROWSER_ACTION_TIMEOUT_MS,
+        )
+        await page.click(
+            f"xpath={xpath}",
+            timeout=SettingsManager.get_settings().BROWSER_ACTION_TIMEOUT_MS,
+        )
         return [ActionSuccess()]
     except Exception as e:
         LOG.warning("Failed to click on the option by index", action=action, exc_info=True)
@@ -674,16 +685,6 @@ async def chain_click(
     page.on("filechooser", fc_func)
     LOG.info("Registered file chooser listener", action=action, path=file)
 
-    # If a download is triggered due to the click, we need to let LLM know in action_results
-    download_triggered = False
-
-    def download_func(download: Any) -> None:
-        nonlocal download_triggered
-        download_triggered = True
-
-    page.on("download", download_func)
-    LOG.info("Registered download listener", action=action)
-
     """
     Clicks on an element identified by the xpath and its parent if failed.
     :param xpath: xpath of the element to click
@@ -695,7 +696,6 @@ async def chain_click(
         return [
             ActionSuccess(
                 javascript_triggered=javascript_triggered,
-                download_triggered=download_triggered,
             )
         ]
     except Exception as e:
@@ -703,7 +703,6 @@ async def chain_click(
             ActionFailure(
                 e,
                 javascript_triggered=javascript_triggered,
-                download_triggered=download_triggered,
             )
         ]
         if await is_input_element(page.locator(xpath)):
@@ -713,7 +712,6 @@ async def chain_click(
                 xpath=xpath,
             )
             sibling_action_result = await click_sibling_of_input(page.locator(xpath), timeout=timeout)
-            sibling_action_result.download_triggered = download_triggered
             action_results.append(sibling_action_result)
             if type(sibling_action_result) == ActionSuccess:
                 return action_results
@@ -733,7 +731,6 @@ async def chain_click(
                 ActionSuccess(
                     javascript_triggered=javascript_triggered,
                     interacted_with_parent=True,
-                    download_triggered=download_triggered,
                 )
             )
         except Exception as pe:
@@ -762,15 +759,13 @@ async def chain_click(
         if file:
             await asyncio.sleep(10)
         page.remove_listener("filechooser", fc_func)
-        page.remove_listener("download", download_func)
 
 
-def get_anchor_to_click(scraped_page: ScrapedPage, element_id: int) -> str | None:
+def get_anchor_to_click(scraped_page: ScrapedPage, element_id: str) -> str | None:
     """
     Get the anchor tag under the label to click
     """
     LOG.info("Getting anchor tag to click", element_id=element_id)
-    element_id = int(element_id)
     for ele in scraped_page.elements:
         if "id" in ele and ele["id"] == element_id:
             for child in ele["children"]:
@@ -779,7 +774,7 @@ def get_anchor_to_click(scraped_page: ScrapedPage, element_id: int) -> str | Non
     return None
 
 
-def get_select_id_in_label_children(scraped_page: ScrapedPage, element_id: int) -> int | None:
+def get_select_id_in_label_children(scraped_page: ScrapedPage, element_id: str) -> str | None:
     """
     search <select> in the children of <label>
     """
@@ -795,7 +790,7 @@ def get_select_id_in_label_children(scraped_page: ScrapedPage, element_id: int) 
     return None
 
 
-def get_checkbox_id_in_label_children(scraped_page: ScrapedPage, element_id: int) -> int | None:
+def get_checkbox_id_in_label_children(scraped_page: ScrapedPage, element_id: str) -> str | None:
     """
     search checkbox/radio in the children of <label>
     """
@@ -916,7 +911,7 @@ async def click_listbox_option(
     scraped_page: ScrapedPage,
     page: Page,
     action: actions.SelectOptionAction,
-    listbox_element_id: int,
+    listbox_element_id: str,
 ) -> bool:
     listbox_element = scraped_page.id_to_element_dict[listbox_element_id]
     # this is a listbox element, get all the children

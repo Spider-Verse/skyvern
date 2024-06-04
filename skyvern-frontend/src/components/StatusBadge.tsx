@@ -9,13 +9,23 @@ function StatusBadge({ status }: Props) {
   let variant: "default" | "success" | "destructive" | "warning" = "default";
   if (status === "completed") {
     variant = "success";
-  } else if (status === "failed" || status === "terminated") {
+  } else if (
+    status === "failed" ||
+    status === "terminated" ||
+    status === "timed_out"
+  ) {
     variant = "destructive";
   } else if (status === "running") {
     variant = "warning";
   }
 
-  return <Badge variant={variant}>{status}</Badge>;
+  const statusText = status === "timed_out" ? "timed out" : status;
+
+  return (
+    <Badge className="h-fit" variant={variant}>
+      {statusText}
+    </Badge>
+  );
 }
 
 export { StatusBadge };
