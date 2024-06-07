@@ -1,12 +1,19 @@
-import { Action } from "@/api/types";
-import { Button } from "@/components/ui/button";
-import { ArrowLeftIcon, ArrowRightIcon } from "@radix-ui/react-icons";
-import { useQueryClient } from "@tanstack/react-query";
-import { useParams } from "react-router-dom";
-import { useCredentialGetter } from "@/hooks/useCredentialGetter";
 import { getClient } from "@/api/AxiosClient";
-import { useEffect, useRef } from "react";
+import { Action, ActionTypes, ReadableActionTypes } from "@/api/types";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Separator } from "@/components/ui/separator";
+import { useCredentialGetter } from "@/hooks/useCredentialGetter";
 import { cn } from "@/util/utils";
+import {
+  ArrowLeftIcon,
+  ArrowRightIcon,
+  CheckCircledIcon,
+  CrossCircledIcon,
+} from "@radix-ui/react-icons";
+import { useQueryClient } from "@tanstack/react-query";
+import { useEffect, useRef } from "react";
+import { useParams } from "react-router-dom";
 
 type Props = {
   data: Array<Action | null>;
@@ -40,8 +47,8 @@ function ScrollableActionList({
   }, [activeIndex]);
 
   return (
-    <div className="w-1/4 flex flex-col items-center border rounded h-[40rem]">
-      <div className="flex items-center text-sm p-2 gap-2">
+    <div className="w-1/3 flex flex-col items-center border rounded h-[40rem]">
+      <div className="flex items-center text-sm p-4 gap-2">
         <Button
           size="icon"
           onClick={() => {
@@ -55,7 +62,7 @@ function ScrollableActionList({
           <ArrowRightIcon />
         </Button>
       </div>
-      <div className="overflow-y-scroll w-full p-4 space-y-4">
+      <div className="overflow-y-scroll w-full px-4 pb-4 space-y-4">
         {data.map((action, index) => {
           if (!action) {
             return null;
@@ -63,13 +70,14 @@ function ScrollableActionList({
           const selected = activeIndex === index;
           return (
             <div
+              key={index}
               ref={(element) => {
                 refs.current[index] = element;
               }}
               className={cn(
-                "flex p-4 rounded-lg shadow-md border hover:bg-muted cursor-pointer",
+                "flex p-4 rounded-lg shadow-md border hover:border-slate-500 cursor-pointer",
                 {
-                  "bg-muted": selected,
+                  "border-slate-500": selected,
                 },
               )}
               onClick={() => onActiveIndexChange(index)}
@@ -92,9 +100,29 @@ function ScrollableActionList({
                 });
               }}
             >
-              <div className="flex-1">
-                <div className="text-sm">{`Action ${index + 1}`}</div>
-                <div className="text-sm">{action.type}</div>
+              <div className="flex-1 p-2 pt-0 space-y-2">
+                <div className="flex justify-between">
+                  <div className="flex gap-2 items-center">
+                    <span>#{index + 1}</span>
+                    <Badge>{ReadableActionTypes[action.type]}</Badge>
+                    <div>{action.confidence}</div>
+                  </div>
+                  <div>
+                    {action.success ? (
+                      <CheckCircledIcon className="w-6 h-6 text-success" />
+                    ) : (
+                      <CrossCircledIcon className="w-6 h-6 text-destructive" />
+                    )}
+                  </div>
+                </div>
+
+                <div className="text-sm">{action.reasoning}</div>
+                {action.type === ActionTypes.InputText && (
+                  <>
+                    <Separator className="bg-slate-50 block" />
+                    <div className="text-sm">Input: {action.input}</div>
+                  </>
+                )}
               </div>
             </div>
           );
