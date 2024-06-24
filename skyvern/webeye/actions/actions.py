@@ -14,6 +14,7 @@ LOG = structlog.get_logger()
 class ActionType(StrEnum):
     CLICK = "click"
     INPUT_TEXT = "input_text"
+    INPUT_PAYLOAD = "input_payload"
     UPLOAD_FILE = "upload_file"
 
     # This action is not used in the current implementation. Click actions are used instead."
@@ -87,6 +88,12 @@ class InputTextAction(WebAction):
     def __repr__(self) -> str:
         return f"InputTextAction(element_id={self.element_id}, text={self.text})"
 
+class InputPayloadAction(InputTextAction):
+    action_type: ActionType = ActionType.INPUT_PAYLOAD
+    text: str = "payload"
+
+    def __repr__(self) -> str:
+        return f"InputPayloadAction(element_id={self.element_id})"
 
 class UploadFileAction(WebAction):
     action_type: ActionType = ActionType.UPLOAD_FILE
@@ -182,6 +189,9 @@ def parse_action(action: Dict[str, Any], data_extraction_goal: str | None = None
 
     if action_type == ActionType.INPUT_TEXT:
         return InputTextAction(element_id=element_id, text=action["text"], reasoning=reasoning)
+
+    if action_type == ActionType.INPUT_PAYLOAD:
+        return InputPayloadAction(element_id=element_id, reasoning=reasoning)
 
     if action_type == ActionType.UPLOAD_FILE:
         # TODO: see if the element is a file input element. if it's not, convert this action into a click action

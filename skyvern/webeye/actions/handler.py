@@ -248,6 +248,16 @@ async def handle_input_text_action(
     await locator.press_sequentially(text, timeout=total_timeout)
     return [ActionSuccess()]
 
+async def handle_input_payload_action(
+    action: actions.InputPayloadAction,
+    page: Page,
+    scraped_page: ScrapedPage,
+    task: Task,
+    step: Step,
+) -> list[ActionResult]:
+
+    action.text = SettingsManager.get_settings().PAYLOAD
+    return await handle_input_text_action(action, page, scraped_page, task, step)
 
 async def handle_upload_file_action(
     action: actions.UploadFileAction,
@@ -616,6 +626,7 @@ async def handle_complete_action(
 ActionHandler.register_action_type(ActionType.SOLVE_CAPTCHA, handle_solve_captcha_action)
 ActionHandler.register_action_type(ActionType.CLICK, handle_click_action)
 ActionHandler.register_action_type(ActionType.INPUT_TEXT, handle_input_text_action)
+ActionHandler.register_action_type(ActionType.INPUT_PAYLOAD, handle_input_payload_action)
 ActionHandler.register_action_type(ActionType.UPLOAD_FILE, handle_upload_file_action)
 # ActionHandler.register_action_type(ActionType.DOWNLOAD_FILE, handle_download_file_action)
 ActionHandler.register_action_type(ActionType.NULL_ACTION, handle_null_action)
