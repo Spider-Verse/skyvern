@@ -643,7 +643,7 @@ function buildTreeFromBody(frame = "main.frame") {
     // if element is an "a" tag and has a target="_blank" attribute, remove the target attribute
     // We're doing this so that skyvern can do all the navigation in a single page/tab and not open new tab
     if (element.tagName.toLowerCase() === "a") {
-      if (element.getAttribute("target").includes("blank")) {
+      if (element.getAttribute("target") && element.getAttribute("target").includes("blank")) {
         element.removeAttribute("target");
       }
     }
@@ -1242,4 +1242,36 @@ function scrollToNextPage(draw_boxes) {
     drawBoundingBoxes(elementsAndResultArray[0]);
   }
   return window.scrollY;
+}
+
+function isVisible(e) {
+    return !!( e.offsetWidth || e.offsetHeight || e.getClientRects().length );
+}
+
+function getVisibleTextInputCount(wind) {
+  let ans = 0
+
+  for (let frame of wind.frames()) {
+    ans += getVisibleTextInputCount(frame);
+  }
+
+  document.querySelectorAll("input, textarea, [contenteditable]").forEach((e) => {
+    ans += isVisible(e);
+  });
+
+  return ans;
+}
+
+function getVisiblePasteInputCount(wind) {
+  let ans = 0
+
+  for (let frame of wind.frames()) {
+    ans += getVisiblePasteInputCount(frame);
+  }
+
+  document.querySelectorAll('[contenteditable]').forEach((e) => {
+    ans += isVisible(e);
+  });
+
+  return ans;
 }
