@@ -1,5 +1,11 @@
 url,task_id,status,extracted_information,failure_reason,cost
 google.com,tsk_274194306262852722,completed,"{""status"": ""LOGGED_IN""}",\N,0.15584
 github.com,tsk_274199059489398426,completed,\N,\N,0.131945
-hackmd.io,tsk_274202199188164066,completed,"{""status"": ""CAPTCHA"", ""url"": ""https://hackmd.io/join?email=hulk.skyvern%40gmail.com"", ""email"": ""hulk.skyvern@gmail.com""}",\N,0.099945
-hackmd.io,tsk_274203526132079426,completed,"{""status"": ""CAPTCHA""}",\N,0.099265
+// hackmd.io,tsk_274202199188164066,completed,"{""status"": ""CAPTCHA"", ""url"": ""https://hackmd.io/join?email=hulk.skyvern%40gmail.com"", ""email"": ""hulk.skyvern@gmail.com""}",\N,0.099945
+// hackmd.io,tsk_274203526132079426,completed,"{""status"": ""CAPTCHA""}",\N,0.099265
+leetcode.com,tsk_278235659632880858,completed,"{"status": "LOGGED_IN"}",\N,0.513150
+yahoo.com,tsk_278236626000522704,failed,\N,Max retries per step (5) exceeded,0
+meta.discourse.org,tsk_278255462825886008,failed,\N,Max retries per step (5) exceeded,3.337965
+help.vimeo.com/hc/en-us,tsk_278258656752786116,completed,"{""STATUS"": ""LOGGED_IN""}",\N,0.878085
+bot9.ai/,tsk_278259880818465666,canceled,\N,\N,6.625040
+bot9.ai/,tsk_278279374412804136,failed,\N,Max retries per step (5) exceeded,0.0050755

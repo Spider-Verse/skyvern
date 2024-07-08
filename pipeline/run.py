@@ -35,14 +35,13 @@ def hostname_resolves(hostname):
 client = docker.from_env()
 container = client.containers.get('skyvern-postgres-1')
 
-r = requests.post('http://0.0.0.0:8000/api/v1/tasks',
-    headers = { 'x-api-key': KEY },
-    json = {
-        "url": 'http://htmledit.squarefree.com',
-        "navigation_goal": "Add a button to the code input. Once created, mark task as COMPLETE.",
-        "proxy_location": "RESIDENTIAL"
-    })
-exit()
+# r = requests.post('http://0.0.0.0:8000/api/v1/tasks',
+#     headers = { 'x-api-key': KEY },
+#     json = {
+#         "url": 'http://hackmd.io/login',
+#         "navigation_goal": "Wait for the sign in with Google button to appear. Then press it. Afterwards, mark task as COMPLETE.",
+#         "proxy_location": "RESIDENTIAL"
+#     })
 
 with open('logins.csv', 'r+') as logins_file, open('tranco_Z2QWG_unique.csv') as tranco_file:
     seen = set(url for (url, *_) in csv.reader(logins_file))
@@ -53,7 +52,7 @@ with open('logins.csv', 'r+') as logins_file, open('tranco_Z2QWG_unique.csv') as
         if url in seen: continue
         if not hostname_resolves(url): continue
 
-        url = 'hackmd.io'
+        url = 'bot9.ai/'
 
         r = requests.post('http://0.0.0.0:8000/api/v1/tasks',
             headers = { 'x-api-key': KEY },
