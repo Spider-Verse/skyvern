@@ -927,10 +927,10 @@ async function buildTreeFromBody(frame = "main.frame", open_select = false) {
         let elementObj = null;
         if (element.tagName.toLowerCase() === "svg") {
           // if element is <svg> we save all attributes and its children
-          elementObj = await buildElementObject(element, false);
+          elementObj = buildElementObject(element, false);
         } else if (element.closest("svg")) {
           // if elemnet is the children of <svg>
-          elementObj = await buildElementObject(element, false);
+          elementObj = buildElementObject(element, false);
         } else {
           // character length limit for non-interactable elements should be 5000
           // we don't use element context in HTML format,
@@ -943,7 +943,7 @@ async function buildTreeFromBody(frame = "main.frame", open_select = false) {
             }
           }
           if (textContent && textContent.length <= 5000) {
-            elementObj = await buildElementObject(element, false);
+            elementObj = buildElementObject(element, false);
           }
         }
 
