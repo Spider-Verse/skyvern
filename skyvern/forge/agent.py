@@ -222,6 +222,7 @@ class ForgeAgent:
             )
             # We don't send task response for now as the task is canceled
             # TODO: shall we send task response here?
+            await app.BROWSER_MANAGER.cleanup_for_task(task.task_id, close_browser_on_completion)
             return step, None, None
 
         next_step: Step | None = None
@@ -943,7 +944,7 @@ class ForgeAgent:
             properties={"organization_id": task.organization_id},
         ):
             LOG.info("Using Claude3 Sonnet prompt template for action extraction")
-            prompt_template = "extract-action-claude3-sonnet"
+        prompt_template = "extract-action-claude3-sonnet"
 
         # TODO: we only use HTML element for now, introduce a way to switch in the future
         element_tree_format = ElementTreeFormat.HTML

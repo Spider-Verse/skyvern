@@ -36,12 +36,12 @@ services:
     environment:
       - DATABASE_STRING=postgresql+psycopg://skyvern:skyvern@postgres:5432/skyvern
       - BROWSER_TYPE=chromium-headful
-      - ENABLE_OPENAI=true
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      # - ENABLE_OPENAI=true
+      # - OPENAI_API_KEY=${OPENAI_API_KEY}
       # If you want to use other LLM provider, like azure and anthropic:
-      # - ENABLE_ANTHROPIC=true
-      # - LLM_KEY=ANTHROPIC_CLAUDE3_OPUS
-      # - ANTHROPIC_API_KEY=<your_anthropic_key>
+      - ENABLE_ANTHROPIC=true
+      - LLM_KEY=ANTHROPIC_CLAUDE3.5_SONNET
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       # - ENABLE_AZURE=true
       # - LLM_KEY=AZURE_OPENAI
       # - AZURE_DEPLOYMENT=<your_azure_deployment>

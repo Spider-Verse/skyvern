@@ -6,12 +6,14 @@
 
 KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjQ4NjQ0ODM3OTksInN1YiI6Im9fMjc0MTkzMjg3OTk0NDg5OTgyIn0.uw7G-Ul4KY_zeQUn3ibkmKpPjDQ0Rewv25DMNQWakHo"
 
-# curl -X POST -H 'Content-Type: application/json' -H "x-api-key: ${KEY}" -d '{
-#     "url": "https://google.com",
-#     "navigation_goal": "Sign in to google",
-#     "navigation_payload": {"email": "hulk.skyvern@gmail.com", "password": "skyvern.hulk"},
-#     "proxy_location": "RESIDENTIAL"
-# }' http://0.0.0.0:8000/api/v1/tasks
+# r = requests.post('http://0.0.0.0:8000/api/v1/tasks',
+#     headers = { 'x-api-key': KEY },
+#     json = {
+#         "url": 'http://google.com',
+#         "navigation_goal": "Sign in to google. Do not repeat actions. Once finished, mark task as COMPLETE.",
+#         "navigation_payload": {"email": "hulk.skyvern@gmail.com", "password": "skyvern.hulk"},
+#         "proxy_location": "RESIDENTIAL"
+#     })
 
 # curl -X POST -H 'Content-Type: application/json' -H "x-api-key: ${KEY}" -d '{
 #     "url": "https://google.com",
@@ -35,13 +37,6 @@ def hostname_resolves(hostname):
 client = docker.from_env()
 container = client.containers.get('skyvern-postgres-1')
 
-# r = requests.post('http://0.0.0.0:8000/api/v1/tasks',
-#     headers = { 'x-api-key': KEY },
-#     json = {
-#         "url": 'http://hackmd.io/login',
-#         "navigation_goal": "Wait for the sign in with Google button to appear. Then press it. Afterwards, mark task as COMPLETE.",
-#         "proxy_location": "RESIDENTIAL"
-#     })
 
 with open('logins.csv', 'r+') as logins_file, open('tranco_Z2QWG_unique.csv') as tranco_file:
     seen = set(url for (url, *_) in csv.reader(logins_file))
@@ -52,17 +47,18 @@ with open('logins.csv', 'r+') as logins_file, open('tranco_Z2QWG_unique.csv') as
         if url in seen: continue
         if not hostname_resolves(url): continue
 
-        url = 'bot9.ai/'
+        url = 'github.com'
 
         r = requests.post('http://0.0.0.0:8000/api/v1/tasks',
             headers = { 'x-api-key': KEY },
             json = {
                 "url": 'http://' + url,
-                "navigation_goal": "Your goal is to sign up for websites, prioritizing OAuth through Google or GitHub to create an account. If needed, create a random username and password. If the website requires a user to perform 2FA through email or phone, mark task as COMPLETE. If the website has no login functionality, mark task as COMPLETE. If you are blocked by a Captcha, mark task as COMPLETE. Do not repeat unsuccessful actions.",
-                "navigation_payload": {"email": "hulk.skyvern@gmail.com"},
+                "navigation_goal": "Your goal is to sign up for websites, prioritizing OAuth through Google to create an account. If the website requires a user to perform 2FA through email or phone, mark task as COMPLETE. If the website has no login functionality, mark task as COMPLETE. If you are blocked by a Captcha, mark task as COMPLETE. Do not repeat actions.",
+                "navigation_payload": {"email": "hulk.skyvern@gmail.com", "username": "hulk.skyvern", "password": "Skyvern.hulk0"},
                 "data_extraction_goal": "Report STATUS as LOGGED_IN if you are logged in, NO_LOGIN if the website does not support user logins, 2FA if the page is asking for 2FA through email or phone, or CAPTCHA if there is a Captcha.",
                 "proxy_location": "RESIDENTIAL"
             })
+
         
         task_id = r.json()['task_id']
         meta = container.exec_run(f'psql -U skyvern -c "copy (select status,extracted_information,failure_reason from tasks where task_id=\'{task_id}\') to stdout"').output.decode().strip().split('\t')

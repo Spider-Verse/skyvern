@@ -66,14 +66,14 @@ class Settings(BaseSettings):
     # LLM Configuration #
     #####################
     # ACTIVE LLM PROVIDER
-    LLM_KEY: str = "OPENAI_GPT3"
+    LLM_KEY: str = "ANTHROPIC_CLAUDE3.5_SONNET"
     # COMMON
     LLM_CONFIG_TIMEOUT: int = 300
     LLM_CONFIG_MAX_TOKENS: int = 4096
     LLM_CONFIG_TEMPERATURE: float = 0
     # LLM PROVIDER SPECIFIC
     ENABLE_OPENAI: bool = False
-    ENABLE_ANTHROPIC: bool = False
+    ENABLE_ANTHROPIC: bool = True
     ENABLE_AZURE: bool = False
     ENABLE_BEDROCK: bool = False
     # OPENAI
