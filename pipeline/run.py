@@ -1,6 +1,3 @@
-# Run with changes:
-# rm browser/SingletonLock -f && sudo chmod 777 postgres-data browser -R && docker compose build && docker compose up
-
 KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjQ4NjQ0ODM3OTksInN1YiI6Im9fMjc0MTkzMjg3OTk0NDg5OTgyIn0.uw7G-Ul4KY_zeQUn3ibkmKpPjDQ0Rewv25DMNQWakHo"
 
 # r = requests.post('http://0.0.0.0:8000/api/v1/tasks',

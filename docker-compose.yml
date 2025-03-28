@@ -19,7 +19,8 @@ services:
       retries: 5
 
   skyvern:
-    image: public.ecr.aws/skyvern/skyvern:latest
+    # image: public.ecr.aws/skyvern/skyvern:latest
+    build: .
     restart: on-failure
     # comment out if you want to externally call skyvern API
     ports:
@@ -27,6 +28,7 @@ services:
     volumes:
       - ./artifacts:/data/artifacts
       - ./videos:/data/videos
+      - ./browser:/data/browser
       - ./har:/data/har
       - ./log:/data/log
       - ./.streamlit:/app/.streamlit
@@ -82,7 +84,8 @@ services:
       retries: 5
 
   skyvern-ui:
-    build: .
+    build:
+      dockerfile: Dockerfile.ui
     # image: public.ecr.aws/skyvern/skyvern-ui:latest
     restart: on-failure
     ports:
