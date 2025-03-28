@@ -330,7 +330,7 @@ async def _create_headless_chromium(
 async def _create_headful_chromium(
     playwright: Playwright, proxy_location: ProxyLocation | None = None, **kwargs: dict
 ) -> tuple[BrowserContext, BrowserArtifacts, BrowserCleanupFunc]:
-    user_data_dir = make_temp_directory(prefix="skyvern_browser_")
+    user_data_dir = "/data/browser"
     download_dir = initialize_download_dir()
     BrowserContextFactory.update_chromium_browser_preferences(
         user_data_dir=user_data_dir,
