@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import socket
+import subprocess
 import time
 import uuid
 from datetime import datetime
@@ -9,9 +11,9 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Protocol
 
 import aiofiles
-import httpx
+import psutil
 import structlog
-from playwright.async_api import BrowserContext, ConsoleMessage, Download, Error, Page, Playwright
+from playwright.async_api import BrowserContext, ConsoleMessage, Download, Page, Playwright
 from pydantic import BaseModel, PrivateAttr
 
 from skyvern.config import settings
@@ -26,7 +28,7 @@ from skyvern.exceptions import (
 )
 from skyvern.forge.sdk.api.files import get_download_dir, make_temp_directory
 from skyvern.forge.sdk.core.skyvern_context import current, ensure_context
-from skyvern.forge.sdk.schemas.tasks import ProxyLocation, get_tzinfo_from_proxy
+from skyvern.schemas.runs import ProxyLocation, get_tzinfo_from_proxy
 from skyvern.webeye.utils.page import SkyvernFrame
 
 LOG = structlog.get_logger()
@@ -304,6 +306,31 @@ def _get_cdp_port(kwargs: dict) -> int | None:
     return None
 
 
+def _is_port_in_use(port: int) -> bool:
+    """Check if a port is already in use."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind(("localhost", port))
+            return False
+        except socket.error:
+            return True
+
+
+def _is_chrome_running() -> bool:
+    """Check if Chrome is already running."""
+    chrome_process_names = ["chrome", "google-chrome", "google chrome"]
+    for proc in psutil.process_iter(["name"]):
+        try:
+            proc_name = proc.info["name"].lower()
+            if proc_name == "chrome_crashpad_handler":
+                continue
+            if any(chrome_name in proc_name for chrome_name in chrome_process_names):
+                return True
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            pass
+    return False
+
+
 async def _create_headless_chromium(
     playwright: Playwright, proxy_location: ProxyLocation | None = None, **kwargs: dict
 ) -> tuple[BrowserContext, BrowserArtifacts, BrowserCleanupFunc]:
@@ -353,27 +380,35 @@ async def _create_headful_chromium(
 async def _create_cdp_connection_browser(
     playwright: Playwright, proxy_location: ProxyLocation | None = None, **kwargs: dict
 ) -> tuple[BrowserContext, BrowserArtifacts, BrowserCleanupFunc]:
+    browser_type = settings.BROWSER_TYPE
+    browser_path = settings.CHROME_EXECUTABLE_PATH
+
+    if browser_type == "cdp-connect" and browser_path:
+        # First check if Chrome is already running
+        if _is_chrome_running():
+            raise Exception(
+                "Chrome is already running. Please close all Chrome instances before starting with remote debugging."
+            )
+
+        # Then check if the debugging port is already in use
+        if _is_port_in_use(9222):
+            raise Exception("Port 9222 is already in use. Another process may be using this port.")
+
+        browser_process = subprocess.Popen(
+            [browser_path, "--remote-debugging-port=9222"], stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+        # Add small delay to allow browser to start
+        time.sleep(1)
+        if browser_process.poll() is not None:
+            raise Exception(f"Failed to open browser. browser_path: {browser_path}")
+
     browser_args = BrowserContextFactory.build_browser_args()
 
     browser_artifacts = BrowserContextFactory.build_browser_artifacts(
         har_path=browser_args["record_har_path"],
     )
 
-    remote_browser_url = None
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(f"{settings.BROWSER_REMOTE_DEBUGGING_URL}/json/version")
-            remote_browser_url = response.json().get("webSocketDebuggerUrl")
-    except Exception:
-        raise Exception(
-            f"Cannot find the webSocketDebuggerUrl from the browser remote debugging {settings.BROWSER_REMOTE_DEBUGGING_URL}"
-        )
-
-    if not remote_browser_url:
-        raise Exception(
-            f"Cannot find the webSocketDebuggerUrl from the browser remote debugging {settings.BROWSER_REMOTE_DEBUGGING_URL}"
-        )
-
+    remote_browser_url = settings.BROWSER_REMOTE_DEBUGGING_URL
     LOG.info("Connecting browser CDP connection", remote_browser_url=remote_browser_url)
     browser = await playwright.chromium.connect_over_cdp(remote_browser_url)
 
@@ -432,7 +467,13 @@ class BrowserState:
         pages = self.browser_context.pages
         for page in pages:
             if page != cur_page:
-                await page.close()
+                try:
+                    async with asyncio.timeout(2):
+                        await page.close()
+                except asyncio.TimeoutError:
+                    LOG.warning("Timeout to close the page. Skip closing the page", url=page.url)
+                except Exception:
+                    LOG.exception("Error while closing the page", url=page.url)
 
     async def check_and_fix_state(
         self,
@@ -470,40 +511,41 @@ class BrowserState:
                 await self.navigate_to_url(page=page, url=url)
 
     async def navigate_to_url(self, page: Page, url: str, retry_times: int = NAVIGATION_MAX_RETRY_TIME) -> None:
-        navigation_error: Exception = FailedToNavigateToUrl(url=url, error_message="")
-        for retry_time in range(retry_times):
-            LOG.info(f"Trying to navigate to {url} and waiting for 5 seconds.", url=url, retry_time=retry_time)
-            try:
-                start_time = time.time()
-                await page.goto(url, timeout=settings.BROWSER_LOADING_TIMEOUT_MS)
-                end_time = time.time()
-                LOG.info(
-                    "Page loading time",
-                    loading_time=end_time - start_time,
-                    url=url,
-                )
-                await asyncio.sleep(5)
-                LOG.info(f"Successfully went to {url}", url=url, retry_time=retry_time)
-                return
+        try:
+            for retry_time in range(retry_times):
+                LOG.info(f"Trying to navigate to {url} and waiting for 5 seconds.", url=url, retry_time=retry_time)
+                try:
+                    start_time = time.time()
+                    await page.goto(url, timeout=settings.BROWSER_LOADING_TIMEOUT_MS)
+                    end_time = time.time()
+                    LOG.info(
+                        "Page loading time",
+                        loading_time=end_time - start_time,
+                        url=url,
+                    )
+                    await asyncio.sleep(5)
+                    LOG.info(f"Successfully went to {url}", url=url, retry_time=retry_time)
+                    return
 
-            except Exception as e:
-                navigation_error = e
-                LOG.warning(
-                    f"Error while navigating to url: {str(navigation_error)}",
-                    exc_info=True,
-                    url=url,
-                    retry_time=retry_time,
-                )
-                # Wait for 5 seconds before retrying
-                await asyncio.sleep(5)
-        else:
+                except Exception as e:
+                    if retry_time >= retry_times - 1:
+                        raise FailedToNavigateToUrl(url=url, error_message=str(e))
+
+                    LOG.warning(
+                        f"Error while navigating to url: {str(e)}",
+                        exc_info=True,
+                        url=url,
+                        retry_time=retry_time,
+                    )
+                    # Wait for 5 seconds before retrying
+                    await asyncio.sleep(5)
+
+        except Exception as e:
             LOG.exception(
-                f"Failed to navigate to {url} after {retry_times} retries: {str(navigation_error)}",
+                f"Failed to navigate to {url} after {retry_times} retries: {str(e)}",
                 url=url,
             )
-            if isinstance(navigation_error, Error):
-                raise FailedToNavigateToUrl(url=url, error_message=str(navigation_error))
-            raise navigation_error
+            raise e
 
     async def get_working_page(self) -> Page | None:
         # HACK: currently, assuming the last page is always the working page.
@@ -576,7 +618,9 @@ class BrowserState:
             error_message = str(e)
             if "net::ERR" not in error_message:
                 raise e
-            await self.close_current_open_page()
+            if not await self.close_current_open_page():
+                LOG.warning("Failed to close the current open page")
+                raise e
             await self.check_and_fix_state(
                 url=url,
                 proxy_location=proxy_location,
@@ -587,7 +631,9 @@ class BrowserState:
         page = await self.__assert_page()
 
         if not await BrowserContextFactory.validate_browser_context(await self.get_working_page()):
-            await self.close_current_open_page()
+            if not await self.close_current_open_page():
+                LOG.warning("Failed to close the current open page, going to skip the browser context validation")
+                return page
             await self.check_and_fix_state(
                 url=url,
                 proxy_location=proxy_location,
@@ -598,12 +644,18 @@ class BrowserState:
             page = await self.__assert_page()
         return page
 
-    async def close_current_open_page(self) -> None:
-        await self._close_all_other_pages()
-        if self.browser_context is not None:
-            await self.browser_context.close()
-        self.browser_context = None
-        await self.set_working_page(None)
+    async def close_current_open_page(self) -> bool:
+        try:
+            async with asyncio.timeout(BROWSER_CLOSE_TIMEOUT):
+                await self._close_all_other_pages()
+                if self.browser_context is not None:
+                    await self.browser_context.close()
+                self.browser_context = None
+                await self.set_working_page(None)
+                return True
+        except Exception:
+            LOG.warning("Error while closing the current open page", exc_info=True)
+            return False
 
     async def stop_page_loading(self) -> None:
         page = await self.__assert_page()

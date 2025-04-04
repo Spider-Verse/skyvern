@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "skyvern"
-version = "0.1.64"
+version = "0.1.71"
 description = ""
 authors = ["Skyvern AI <info@skyvern.com>"]
 readme = "README.md"
@@ -33,7 +33,7 @@ commentjson = "^0.9.0"
 asyncache = "^0.3.1"
 orjson = "^3.9.10"
 structlog = "^23.2.0"
-typer = "^0.9.0"
+typer = ">=0.9.0,<1.0"
 types-toml = "^0.10.8.7"
 httpx = {version = "^0.27.0", extras = ["socks"]}
 filetype = "^1.2.0"
@@ -52,6 +52,8 @@ pyotp = "^2.9.0"
 asyncpg = "^0.30.0"
 json-repair = "^0.34.0"
 pypdf = "^5.1.0"
+fastmcp = "^0.4.1"
+psutil = ">=7.0.0"
 
 [tool.poetry.group.dev.dependencies]
 isort = "^5.13.2"
@@ -132,7 +134,7 @@ skip = ["webeye/actions/__init__.py", "forge/sdk/__init__.py"]
 plugins = "sqlalchemy.ext.mypy.plugin"
 
 [tool.poetry.scripts]
-skyvern = "skyvern.cli.commands:app"
+skyvern = "skyvern.cli.commands:cli_app"
 
 [tool.codeflash]                                                                                                                                                                                                                                                                                                             
 # All paths are relative to this pyproject.toml's directory.                                                                                                                                                                                                                                                                 

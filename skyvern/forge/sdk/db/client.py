@@ -66,10 +66,10 @@ from skyvern.forge.sdk.schemas.credentials import Credential, CredentialType
 from skyvern.forge.sdk.schemas.organization_bitwarden_collections import OrganizationBitwardenCollection
 from skyvern.forge.sdk.schemas.organizations import Organization, OrganizationAuthToken
 from skyvern.forge.sdk.schemas.persistent_browser_sessions import PersistentBrowserSession
+from skyvern.forge.sdk.schemas.runs import Run
 from skyvern.forge.sdk.schemas.task_generations import TaskGeneration
-from skyvern.forge.sdk.schemas.task_runs import TaskRun, TaskRunType
 from skyvern.forge.sdk.schemas.task_v2 import TaskV2, TaskV2Status, Thought, ThoughtType
-from skyvern.forge.sdk.schemas.tasks import OrderBy, ProxyLocation, SortDirection, Task, TaskStatus
+from skyvern.forge.sdk.schemas.tasks import OrderBy, SortDirection, Task, TaskStatus
 from skyvern.forge.sdk.schemas.totp_codes import TOTPCode
 from skyvern.forge.sdk.schemas.workflow_runs import WorkflowRunBlock
 from skyvern.forge.sdk.workflow.models.block import BlockStatus, BlockType
@@ -91,6 +91,7 @@ from skyvern.forge.sdk.workflow.models.workflow import (
     WorkflowRunStatus,
     WorkflowStatus,
 )
+from skyvern.schemas.runs import ProxyLocation, RunType
 from skyvern.webeye.actions.actions import Action
 from skyvern.webeye.actions.models import AgentStepOutput
 
@@ -1546,8 +1547,8 @@ class AgentDB:
 
     async def get_workflow_runs_by_parent_workflow_run_id(
         self,
-        organization_id: str,
         parent_workflow_run_id: str,
+        organization_id: str | None = None,
     ) -> list[WorkflowRun]:
         try:
             async with self.Session() as session:
@@ -2782,13 +2783,13 @@ class AgentDB:
 
     async def create_task_run(
         self,
-        task_run_type: TaskRunType,
+        task_run_type: RunType,
         organization_id: str,
         run_id: str,
         title: str | None = None,
         url: str | None = None,
         url_hash: str | None = None,
-    ) -> TaskRun:
+    ) -> Run:
         async with self.Session() as session:
             task_run = TaskRunModel(
                 task_run_type=task_run_type,
@@ -2801,7 +2802,7 @@ class AgentDB:
             session.add(task_run)
             await session.commit()
             await session.refresh(task_run)
-            return TaskRun.model_validate(task_run)
+            return Run.model_validate(task_run)
 
     async def create_credential(
         self,
@@ -2915,7 +2916,7 @@ class AgentDB:
                 return OrganizationBitwardenCollection.model_validate(organization_bitwarden_collection)
             return None
 
-    async def cache_task_run(self, run_id: str, organization_id: str | None = None) -> TaskRun:
+    async def cache_task_run(self, run_id: str, organization_id: str | None = None) -> Run:
         async with self.Session() as session:
             task_run = (
                 await session.scalars(
@@ -2926,12 +2927,12 @@ class AgentDB:
                 task_run.cached = True
                 await session.commit()
                 await session.refresh(task_run)
-                return TaskRun.model_validate(task_run)
-            raise NotFoundError(f"TaskRun {run_id} not found")
+                return Run.model_validate(task_run)
+            raise NotFoundError(f"Run {run_id} not found")
 
     async def get_cached_task_run(
-        self, task_run_type: TaskRunType, url_hash: str | None = None, organization_id: str | None = None
-    ) -> TaskRun | None:
+        self, task_run_type: RunType, url_hash: str | None = None, organization_id: str | None = None
+    ) -> Run | None:
         async with self.Session() as session:
             query = select(TaskRunModel)
             if task_run_type:
@@ -2942,16 +2943,16 @@ class AgentDB:
                 query = query.filter_by(organization_id=organization_id)
             query = query.filter_by(cached=True).order_by(TaskRunModel.created_at.desc())
             task_run = (await session.scalars(query)).first()
-            return TaskRun.model_validate(task_run) if task_run else None
+            return Run.model_validate(task_run) if task_run else None
 
-    async def get_task_run(
+    async def get_run(
         self,
         run_id: str,
         organization_id: str | None = None,
-    ) -> TaskRun | None:
+    ) -> Run | None:
         async with self.Session() as session:
             query = select(TaskRunModel).filter_by(run_id=run_id)
             if organization_id:
                 query = query.filter_by(organization_id=organization_id)
             task_run = (await session.scalars(query)).first()
-            return TaskRun.model_validate(task_run) if task_run else None
+            return Run.model_validate(task_run) if task_run else None

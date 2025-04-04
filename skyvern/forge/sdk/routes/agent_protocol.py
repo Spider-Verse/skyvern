@@ -1,5 +1,4 @@
 import datetime
-import hashlib
 import os
 import uuid
 from enum import Enum
@@ -7,20 +6,8 @@ from typing import Annotated, Any
 
 import structlog
 import yaml
-from fastapi import (
-    APIRouter,
-    BackgroundTasks,
-    Depends,
-    Header,
-    HTTPException,
-    Query,
-    Request,
-    Response,
-    UploadFile,
-    status,
-)
+from fastapi import BackgroundTasks, Depends, Header, HTTPException, Path, Query, Request, Response, UploadFile, status
 from fastapi.responses import ORJSONResponse
-from sqlalchemy.exc import OperationalError
 
 from skyvern import analytics
 from skyvern.config import settings
@@ -30,12 +17,12 @@ from skyvern.forge.sdk.api.aws import aws_client
 from skyvern.forge.sdk.api.llm.exceptions import LLMProviderError
 from skyvern.forge.sdk.artifact.models import Artifact
 from skyvern.forge.sdk.core import skyvern_context
-from skyvern.forge.sdk.core.hashing import generate_url_hash
 from skyvern.forge.sdk.core.permissions.permission_checker_factory import PermissionCheckerFactory
 from skyvern.forge.sdk.core.security import generate_skyvern_signature
 from skyvern.forge.sdk.db.enums import OrganizationAuthTokenType
 from skyvern.forge.sdk.executor.factory import AsyncExecutorFactory
 from skyvern.forge.sdk.models import Step
+from skyvern.forge.sdk.routes.routers import base_router, legacy_base_router, legacy_v2_router
 from skyvern.forge.sdk.schemas.ai_suggestions import AISuggestionBase, AISuggestionRequest
 from skyvern.forge.sdk.schemas.organizations import (
     GetOrganizationAPIKeysResponse,
@@ -43,8 +30,7 @@ from skyvern.forge.sdk.schemas.organizations import (
     Organization,
     OrganizationUpdate,
 )
-from skyvern.forge.sdk.schemas.task_generations import GenerateTaskRequest, TaskGeneration, TaskGenerationBase
-from skyvern.forge.sdk.schemas.task_runs import TaskRunResponse, TaskRunType
+from skyvern.forge.sdk.schemas.task_generations import GenerateTaskRequest, TaskGeneration
 from skyvern.forge.sdk.schemas.task_v2 import TaskV2Request
 from skyvern.forge.sdk.schemas.tasks import (
     CreateTaskResponse,
@@ -56,7 +42,7 @@ from skyvern.forge.sdk.schemas.tasks import (
     TaskStatus,
 )
 from skyvern.forge.sdk.schemas.workflow_runs import WorkflowRunTimeline
-from skyvern.forge.sdk.services import org_auth_service, task_run_service, task_v2_service
+from skyvern.forge.sdk.services import org_auth_service
 from skyvern.forge.sdk.workflow.exceptions import (
     FailedToCreateWorkflow,
     FailedToUpdateWorkflow,
@@ -69,16 +55,22 @@ from skyvern.forge.sdk.workflow.models.workflow import (
     Workflow,
     WorkflowRequestBody,
     WorkflowRun,
-    WorkflowRunResponse,
+    WorkflowRunResponseBase,
     WorkflowRunStatus,
     WorkflowStatus,
 )
 from skyvern.forge.sdk.workflow.models.yaml import WorkflowCreateYAMLRequest
+from skyvern.schemas.runs import (
+    RunEngine,
+    RunResponse,
+    RunType,
+    TaskRunRequest,
+    TaskRunResponse,
+    WorkflowRunRequest,
+    WorkflowRunResponse,
+)
+from skyvern.services import run_service, task_v1_service, task_v2_service, workflow_service
 from skyvern.webeye.actions.actions import Action
-from skyvern.webeye.schemas import BrowserSessionResponse
-
-base_router = APIRouter()
-v2_router = APIRouter()
 
 LOG = structlog.get_logger()
 
@@ -104,15 +96,16 @@ class AISuggestionType(str, Enum):
     DATA_SCHEMA = "data_schema"
 
 
-@base_router.post(
+@legacy_base_router.post(
     "/webhook",
     tags=["server"],
     openapi_extra={
         "x-fern-sdk-group-name": "server",
         "x-fern-sdk-method-name": "webhook",
     },
+    include_in_schema=False,
 )
-@base_router.post("/webhook/", include_in_schema=False)
+@legacy_base_router.post("/webhook/", include_in_schema=False)
 async def webhook(
     request: Request,
     x_skyvern_signature: Annotated[str | None, Header()] = None,
@@ -149,7 +142,7 @@ async def webhook(
     return Response(content="webhook validation", status_code=200)
 
 
-@base_router.get(
+@legacy_base_router.get(
     "/heartbeat",
     tags=["server"],
     openapi_extra={
@@ -157,7 +150,7 @@ async def webhook(
         "x-fern-sdk-method-name": "heartbeat",
     },
 )
-@base_router.get("/heartbeat/", include_in_schema=False)
+@legacy_base_router.get("/heartbeat/", include_in_schema=False)
 async def heartbeat() -> Response:
     """
     Check if the server is running.
@@ -165,7 +158,7 @@ async def heartbeat() -> Response:
     return Response(content="Server is running.", status_code=200)
 
 
-@base_router.post(
+@legacy_base_router.post(
     "/tasks",
     tags=["agent"],
     response_model=CreateTaskResponse,
@@ -174,7 +167,7 @@ async def heartbeat() -> Response:
         "x-fern-sdk-method-name": "run_task_v1",
     },
 )
-@base_router.post(
+@legacy_base_router.post(
     "/tasks/",
     response_model=CreateTaskResponse,
     include_in_schema=False,
@@ -186,40 +179,23 @@ async def run_task_v1(
     current_org: Organization = Depends(org_auth_service.get_current_org),
     x_api_key: Annotated[str | None, Header()] = None,
     x_max_steps_override: Annotated[int | None, Header()] = None,
+    x_user_agent: Annotated[str | None, Header()] = None,
 ) -> CreateTaskResponse:
     analytics.capture("skyvern-oss-agent-task-create", data={"url": task.url})
     await PermissionCheckerFactory.get_instance().check(current_org, browser_session_id=task.browser_session_id)
 
-    created_task = await app.agent.create_task(task, current_org.organization_id)
-    url_hash = generate_url_hash(task.url)
-    await app.DATABASE.create_task_run(
-        task_run_type=TaskRunType.task_v1,
-        organization_id=current_org.organization_id,
-        run_id=created_task.task_id,
-        title=task.title,
-        url=task.url,
-        url_hash=url_hash,
-    )
-    if x_max_steps_override:
-        LOG.info(
-            "Overriding max steps per run",
-            max_steps_override=x_max_steps_override,
-            organization_id=current_org.organization_id,
-            task_id=created_task.task_id,
-        )
-    await AsyncExecutorFactory.get_executor().execute_task(
+    created_task = await task_v1_service.run_task(
+        task=task,
+        organization=current_org,
+        x_max_steps_override=x_max_steps_override,
+        x_api_key=x_api_key,
         request=request,
         background_tasks=background_tasks,
-        task_id=created_task.task_id,
-        organization_id=current_org.organization_id,
-        max_steps_override=x_max_steps_override,
-        browser_session_id=task.browser_session_id,
-        api_key=x_api_key,
     )
     return CreateTaskResponse(task_id=created_task.task_id)
 
 
-@base_router.get(
+@legacy_base_router.get(
     "/tasks/{task_id}",
     tags=["agent"],
     response_model=TaskResponse,
@@ -228,7 +204,7 @@ async def run_task_v1(
         "x-fern-sdk-method-name": "get_task_v1",
     },
 )
-@base_router.get("/tasks/{task_id}/", response_model=TaskResponse, include_in_schema=False)
+@legacy_base_router.get("/tasks/{task_id}/", response_model=TaskResponse, include_in_schema=False)
 async def get_task_v1(
     task_id: str,
     current_org: Organization = Depends(org_auth_service.get_current_org),
@@ -267,7 +243,7 @@ async def get_task_v1(
     )
 
 
-@base_router.post(
+@legacy_base_router.post(
     "/tasks/{task_id}/cancel",
     tags=["agent"],
     openapi_extra={
@@ -275,7 +251,7 @@ async def get_task_v1(
         "x-fern-sdk-method-name": "cancel_task",
     },
 )
-@base_router.post("/tasks/{task_id}/cancel/", include_in_schema=False)
+@legacy_base_router.post("/tasks/{task_id}/cancel/", include_in_schema=False)
 async def cancel_task(
     task_id: str,
     current_org: Organization = Depends(org_auth_service.get_current_org),
@@ -295,7 +271,7 @@ async def cancel_task(
     await app.agent.execute_task_webhook(task=task, last_step=latest_step, api_key=x_api_key)
 
 
-@base_router.post(
+@legacy_base_router.post(
     "/workflows/runs/{workflow_run_id}/cancel",
     tags=["agent"],
     openapi_extra={
@@ -303,7 +279,7 @@ async def cancel_task(
         "x-fern-sdk-method-name": "cancel_workflow_run",
     },
 )
-@base_router.post("/workflows/runs/{workflow_run_id}/cancel/", include_in_schema=False)
+@legacy_base_router.post("/workflows/runs/{workflow_run_id}/cancel/", include_in_schema=False)
 async def cancel_workflow_run(
     workflow_run_id: str,
     current_org: Organization = Depends(org_auth_service.get_current_org),
@@ -320,8 +296,8 @@ async def cancel_workflow_run(
         )
     # get all the child workflow runs and cancel them
     child_workflow_runs = await app.DATABASE.get_workflow_runs_by_parent_workflow_run_id(
-        organization_id=current_org.organization_id,
         parent_workflow_run_id=workflow_run_id,
+        organization_id=current_org.organization_id,
     )
     for child_workflow_run in child_workflow_runs:
         if child_workflow_run.status not in [
@@ -335,7 +311,7 @@ async def cancel_workflow_run(
     await app.WORKFLOW_SERVICE.execute_workflow_webhook(workflow_run, api_key=x_api_key)
 
 
-@base_router.post(
+@legacy_base_router.post(
     "/tasks/{task_id}/retry_webhook",
     tags=["agent"],
     response_model=TaskResponse,
@@ -344,7 +320,7 @@ async def cancel_workflow_run(
         "x-fern-sdk-method-name": "retry_webhook",
     },
 )
-@base_router.post(
+@legacy_base_router.post(
     "/tasks/{task_id}/retry_webhook/",
     response_model=TaskResponse,
     include_in_schema=False,
@@ -373,7 +349,7 @@ async def retry_webhook(
     return await app.agent.build_task_response(task=task_obj, last_step=latest_step)
 
 
-@base_router.get(
+@legacy_base_router.get(
     "/tasks",
     tags=["agent"],
     response_model=list[Task],
@@ -382,7 +358,7 @@ async def retry_webhook(
         "x-fern-sdk-method-name": "get_tasks",
     },
 )
-@base_router.get(
+@legacy_base_router.get(
     "/tasks/",
     response_model=list[Task],
     include_in_schema=False,
@@ -430,7 +406,7 @@ async def get_tasks(
     return ORJSONResponse([(await app.agent.build_task_response(task=task)).model_dump() for task in tasks])
 
 
-@base_router.get(
+@legacy_base_router.get(
     "/runs",
     tags=["agent"],
     response_model=list[WorkflowRun | Task],
@@ -439,7 +415,7 @@ async def get_tasks(
         "x-fern-sdk-method-name": "get_runs",
     },
 )
-@base_router.get(
+@legacy_base_router.get(
     "/runs/",
     response_model=list[WorkflowRun | Task],
     include_in_schema=False,
@@ -462,34 +438,38 @@ async def get_runs(
 
 @base_router.get(
     "/runs/{run_id}",
-    tags=["agent"],
-    response_model=TaskRunResponse,
+    tags=["Agent"],
+    response_model=RunResponse,
+    description="Get a task or a workflow run by id",
+    summary="Get a task or a workflow run by id",
     openapi_extra={
         "x-fern-sdk-group-name": "agent",
         "x-fern-sdk-method-name": "get_run",
     },
+    responses={
+        200: {"description": "Successfully got run"},
+        404: {"description": "Run not found"},
+    },
 )
 @base_router.get(
     "/runs/{run_id}/",
-    response_model=TaskRunResponse,
+    response_model=RunResponse,
     include_in_schema=False,
 )
 async def get_run(
-    run_id: str,
+    run_id: str = Path(..., description="The id of the task run or the workflow run."),
     current_org: Organization = Depends(org_auth_service.get_current_org),
-) -> TaskRunResponse:
-    task_run_response = await task_run_service.get_task_run_response(
-        run_id, organization_id=current_org.organization_id
-    )
-    if not task_run_response:
+) -> RunResponse:
+    run_response = await run_service.get_run_response(run_id, organization_id=current_org.organization_id)
+    if not run_response:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Task run not found {run_id}",
         )
-    return task_run_response
+    return run_response
 
 
-@base_router.get(
+@legacy_base_router.get(
     "/tasks/{task_id}/steps",
     tags=["agent"],
     response_model=list[Step],
@@ -498,7 +478,7 @@ async def get_run(
         "x-fern-sdk-method-name": "get_steps",
     },
 )
-@base_router.get(
+@legacy_base_router.get(
     "/tasks/{task_id}/steps/",
     response_model=list[Step],
     include_in_schema=False,
@@ -517,7 +497,7 @@ async def get_steps(
     return ORJSONResponse([step.model_dump(exclude_none=True) for step in steps])
 
 
-@base_router.get(
+@legacy_base_router.get(
     "/{entity_type}/{entity_id}/artifacts",
     tags=["agent"],
     response_model=list[Artifact],
@@ -526,7 +506,7 @@ async def get_steps(
         "x-fern-sdk-method-name": "get_artifacts",
     },
 )
-@base_router.get(
+@legacy_base_router.get(
     "/{entity_type}/{entity_id}/artifacts/",
     response_model=list[Artifact],
     include_in_schema=False,
@@ -581,7 +561,7 @@ async def get_artifacts(
     return ORJSONResponse([artifact.model_dump() for artifact in artifacts])
 
 
-@base_router.get(
+@legacy_base_router.get(
     "/tasks/{task_id}/steps/{step_id}/artifacts",
     tags=["agent"],
     response_model=list[Artifact],
@@ -590,7 +570,7 @@ async def get_artifacts(
         "x-fern-sdk-method-name": "get_step_artifacts",
     },
 )
-@base_router.get(
+@legacy_base_router.get(
     "/tasks/{task_id}/steps/{step_id}/artifacts/",
     response_model=list[Artifact],
     include_in_schema=False,
@@ -626,7 +606,7 @@ async def get_step_artifacts(
     return ORJSONResponse([artifact.model_dump() for artifact in artifacts])
 
 
-@base_router.get(
+@legacy_base_router.get(
     "/tasks/{task_id}/actions",
     response_model=list[Action],
     tags=["agent"],
@@ -635,7 +615,7 @@ async def get_step_artifacts(
         "x-fern-sdk-method-name": "get_actions",
     },
 )
-@base_router.get(
+@legacy_base_router.get(
     "/tasks/{task_id}/actions/",
     response_model=list[Action],
     include_in_schema=False,
@@ -649,21 +629,21 @@ async def get_actions(
     return actions
 
 
-@base_router.post(
+@legacy_base_router.post(
     "/workflows/{workflow_id}/run",
     response_model=RunWorkflowResponse,
     tags=["agent"],
     openapi_extra={
         "x-fern-sdk-group-name": "agent",
-        "x-fern-sdk-method-name": "run_workflow",
+        "x-fern-sdk-method-name": "run_workflow_legacy",
     },
 )
-@base_router.post(
+@legacy_base_router.post(
     "/workflows/{workflow_id}/run/",
     response_model=RunWorkflowResponse,
     include_in_schema=False,
 )
-async def run_workflow(
+async def run_workflow_legacy(
     request: Request,
     background_tasks: BackgroundTasks,
     workflow_id: str,  # this is the workflow_permanent_id internally
@@ -673,6 +653,7 @@ async def run_workflow(
     template: bool = Query(False),
     x_api_key: Annotated[str | None, Header()] = None,
     x_max_steps_override: Annotated[int | None, Header()] = None,
+    x_user_agent: Annotated[str | None, Header()] = None,
 ) -> RunWorkflowResponse:
     analytics.capture("skyvern-oss-agent-workflow-execute")
     context = skyvern_context.ensure_context()
@@ -682,49 +663,26 @@ async def run_workflow(
         browser_session_id=workflow_request.browser_session_id,
     )
 
-    if template:
-        if workflow_id not in await app.STORAGE.retrieve_global_workflows():
-            raise InvalidTemplateWorkflowPermanentId(workflow_permanent_id=workflow_id)
-
-    workflow_run = await app.WORKFLOW_SERVICE.setup_workflow_run(
-        request_id=request_id,
+    workflow_run = await workflow_service.run_workflow(
+        workflow_id=workflow_id,
+        organization_id=current_org.organization_id,
         workflow_request=workflow_request,
-        workflow_permanent_id=workflow_id,
-        organization_id=current_org.organization_id,
+        template=template,
         version=version,
-        max_steps_override=x_max_steps_override,
-        is_template_workflow=template,
-    )
-    workflow = await app.WORKFLOW_SERVICE.get_workflow_by_permanent_id(
-        workflow_permanent_id=workflow_id,
-        organization_id=None if template else current_org.organization_id,
-        version=version,
-    )
-    await app.DATABASE.create_task_run(
-        task_run_type=TaskRunType.workflow_run,
-        organization_id=current_org.organization_id,
-        run_id=workflow_run.workflow_run_id,
-        title=workflow.title,
-    )
-    if x_max_steps_override:
-        LOG.info("Overriding max steps per run", max_steps_override=x_max_steps_override)
-    await AsyncExecutorFactory.get_executor().execute_workflow(
+        max_steps=x_max_steps_override,
+        api_key=x_api_key,
+        request_id=request_id,
         request=request,
         background_tasks=background_tasks,
-        organization_id=current_org.organization_id,
-        workflow_id=workflow_run.workflow_id,
-        workflow_run_id=workflow_run.workflow_run_id,
-        max_steps_override=x_max_steps_override,
-        browser_session_id=workflow_request.browser_session_id,
-        api_key=x_api_key,
     )
+
     return RunWorkflowResponse(
         workflow_id=workflow_id,
         workflow_run_id=workflow_run.workflow_run_id,
     )
 
 
-@base_router.get(
+@legacy_base_router.get(
     "/workflows/runs",
     response_model=list[WorkflowRun],
     tags=["agent"],
@@ -733,7 +691,7 @@ async def run_workflow(
         "x-fern-sdk-method-name": "get_workflow_runs",
     },
 )
-@base_router.get(
+@legacy_base_router.get(
     "/workflows/runs/",
     response_model=list[WorkflowRun],
     include_in_schema=False,
@@ -753,7 +711,7 @@ async def get_workflow_runs(
     )
 
 
-@base_router.get(
+@legacy_base_router.get(
     "/workflows/{workflow_id}/runs",
     response_model=list[WorkflowRun],
     tags=["agent"],
@@ -762,7 +720,7 @@ async def get_workflow_runs(
         "x-fern-sdk-method-name": "get_workflow_runs_by_id",
     },
 )
-@base_router.get(
+@legacy_base_router.get(
     "/workflows/{workflow_id}/runs/",
     response_model=list[WorkflowRun],
     include_in_schema=False,
@@ -784,7 +742,7 @@ async def get_workflow_runs_by_id(
     )
 
 
-@base_router.get(
+@legacy_base_router.get(
     "/workflows/{workflow_id}/runs/{workflow_run_id}",
     tags=["agent"],
     openapi_extra={
@@ -792,7 +750,7 @@ async def get_workflow_runs_by_id(
         "x-fern-sdk-method-name": "get_workflow_run_with_workflow_id",
     },
 )
-@base_router.get(
+@legacy_base_router.get(
     "/workflows/{workflow_id}/runs/{workflow_run_id}/",
     include_in_schema=False,
 )
@@ -818,7 +776,7 @@ async def get_workflow_run_with_workflow_id(
     return return_dict
 
 
-@base_router.get(
+@legacy_base_router.get(
     "/workflows/{workflow_id}/runs/{workflow_run_id}/timeline",
     tags=["agent"],
     openapi_extra={
@@ -826,7 +784,7 @@ async def get_workflow_run_with_workflow_id(
         "x-fern-sdk-method-name": "get_workflow_run_timeline",
     },
 )
-@base_router.get(
+@legacy_base_router.get(
     "/workflows/{workflow_id}/runs/{workflow_run_id}/timeline/",
     include_in_schema=False,
 )
@@ -839,24 +797,24 @@ async def get_workflow_run_timeline(
     return await _flatten_workflow_run_timeline(current_org.organization_id, workflow_run_id)
 
 
-@base_router.get(
+@legacy_base_router.get(
     "/workflows/runs/{workflow_run_id}",
-    response_model=WorkflowRunResponse,
+    response_model=WorkflowRunResponseBase,
     tags=["agent"],
     openapi_extra={
         "x-fern-sdk-group-name": "agent",
         "x-fern-sdk-method-name": "get_workflow_run",
     },
 )
-@base_router.get(
+@legacy_base_router.get(
     "/workflows/runs/{workflow_run_id}/",
-    response_model=WorkflowRunResponse,
+    response_model=WorkflowRunResponseBase,
     include_in_schema=False,
 )
 async def get_workflow_run(
     workflow_run_id: str,
     current_org: Organization = Depends(org_auth_service.get_current_org),
-) -> WorkflowRunResponse:
+) -> WorkflowRunResponseBase:
     analytics.capture("skyvern-oss-agent-workflow-run-get")
     return await app.WORKFLOW_SERVICE.build_workflow_run_status_response_by_workflow_id(
         workflow_run_id=workflow_run_id,
@@ -864,7 +822,7 @@ async def get_workflow_run(
     )
 
 
-@base_router.post(
+@legacy_base_router.post(
     "/workflows",
     openapi_extra={
         "requestBody": {
@@ -877,7 +835,7 @@ async def get_workflow_run(
     response_model=Workflow,
     tags=["agent"],
 )
-@base_router.post(
+@legacy_base_router.post(
     "/workflows/",
     openapi_extra={
         "requestBody": {
@@ -885,6 +843,26 @@ async def get_workflow_run(
             "required": True,
         },
     },
+    response_model=Workflow,
+    include_in_schema=False,
+)
+@base_router.post(
+    "/workflows",
+    response_model=Workflow,
+    tags=["Agent"],
+    openapi_extra={
+        "x-fern-sdk-group-name": "agent",
+        "x-fern-sdk-method-name": "create_workflow",
+    },
+    description="Create a new workflow",
+    summary="Create a new workflow",
+    responses={
+        200: {"description": "Successfully created workflow"},
+        422: {"description": "Invalid workflow definition"},
+    },
+)
+@base_router.post(
+    "/workflows/",
     response_model=Workflow,
     include_in_schema=False,
 )
@@ -911,8 +889,8 @@ async def create_workflow(
         raise FailedToCreateWorkflow(str(e))
 
 
-@base_router.put(
-    "/workflows/{workflow_permanent_id}",
+@legacy_base_router.put(
+    "/workflows/{workflow_id}",
     openapi_extra={
         "requestBody": {
             "content": {"application/x-yaml": {"schema": WorkflowCreateYAMLRequest.model_json_schema()}},
@@ -924,8 +902,38 @@ async def create_workflow(
     response_model=Workflow,
     tags=["agent"],
 )
-@base_router.put(
-    "/workflows/{workflow_permanent_id}/",
+@legacy_base_router.put(
+    "/workflows/{workflow_id}/",
+    openapi_extra={
+        "requestBody": {
+            "content": {"application/x-yaml": {"schema": WorkflowCreateYAMLRequest.model_json_schema()}},
+            "required": True,
+        },
+    },
+    response_model=Workflow,
+    include_in_schema=False,
+)
+@base_router.post(
+    "/workflows/{workflow_id}",
+    response_model=Workflow,
+    tags=["Agent"],
+    openapi_extra={
+        "requestBody": {
+            "content": {"application/x-yaml": {"schema": WorkflowCreateYAMLRequest.model_json_schema()}},
+            "required": True,
+        },
+        "x-fern-sdk-group-name": "agent",
+        "x-fern-sdk-method-name": "update_workflow",
+    },
+    description="Update a workflow definition",
+    summary="Update a workflow definition",
+    responses={
+        200: {"description": "Successfully updated workflow"},
+        422: {"description": "Invalid workflow definition"},
+    },
+)
+@base_router.post(
+    "/workflows/{workflow_id}/",
     openapi_extra={
         "requestBody": {
             "content": {"application/x-yaml": {"schema": WorkflowCreateYAMLRequest.model_json_schema()}},
@@ -936,7 +944,7 @@ async def create_workflow(
     include_in_schema=False,
 )
 async def update_workflow(
-    workflow_permanent_id: str,
+    workflow_id: str,
     request: Request,
     current_org: Organization = Depends(org_auth_service.get_current_org),
 ) -> Workflow:
@@ -953,37 +961,49 @@ async def update_workflow(
         return await app.WORKFLOW_SERVICE.create_workflow_from_request(
             organization=current_org,
             request=workflow_create_request,
-            workflow_permanent_id=workflow_permanent_id,
+            workflow_permanent_id=workflow_id,
         )
     except WorkflowParameterMissingRequiredValue as e:
         raise e
     except Exception as e:
         LOG.exception(
             "Failed to update workflow",
-            workflow_permanent_id=workflow_permanent_id,
+            workflow_permanent_id=workflow_id,
             organization_id=current_org.organization_id,
         )
-        raise FailedToUpdateWorkflow(workflow_permanent_id, f"<{type(e).__name__}: {str(e)}>")
+        raise FailedToUpdateWorkflow(workflow_id, f"<{type(e).__name__}: {str(e)}>")
 
 
-@base_router.delete(
-    "/workflows/{workflow_permanent_id}",
+@legacy_base_router.delete(
+    "/workflows/{workflow_id}",
     tags=["agent"],
     openapi_extra={
         "x-fern-sdk-group-name": "agent",
         "x-fern-sdk-method-name": "delete_workflow",
     },
 )
-@base_router.delete("/workflows/{workflow_permanent_id}/", include_in_schema=False)
+@legacy_base_router.delete("/workflows/{workflow_id}/", include_in_schema=False)
+@base_router.post(
+    "/workflows/{workflow_id}/delete",
+    tags=["Agent"],
+    openapi_extra={
+        "x-fern-sdk-group-name": "agent",
+        "x-fern-sdk-method-name": "delete_workflow",
+    },
+    description="Delete a workflow",
+    summary="Delete a workflow",
+    responses={200: {"description": "Successfully deleted workflow"}},
+)
+@base_router.post("/workflows/{workflow_id}/delete/", include_in_schema=False)
 async def delete_workflow(
-    workflow_permanent_id: str,
+    workflow_id: str,
     current_org: Organization = Depends(org_auth_service.get_current_org),
 ) -> None:
     analytics.capture("skyvern-oss-agent-workflow-delete")
-    await app.WORKFLOW_SERVICE.delete_workflow_by_permanent_id(workflow_permanent_id, current_org.organization_id)
+    await app.WORKFLOW_SERVICE.delete_workflow_by_permanent_id(workflow_id, current_org.organization_id)
 
 
-@base_router.get(
+@legacy_base_router.get(
     "/workflows",
     response_model=list[Workflow],
     tags=["agent"],
@@ -992,7 +1012,7 @@ async def delete_workflow(
         "x-fern-sdk-method-name": "get_workflows",
     },
 )
-@base_router.get(
+@legacy_base_router.get(
     "/workflows/",
     response_model=list[Workflow],
     include_in_schema=False,
@@ -1041,7 +1061,7 @@ async def get_workflows(
     )
 
 
-@base_router.get(
+@legacy_base_router.get(
     "/workflows/templates",
     response_model=list[Workflow],
     tags=["agent"],
@@ -1050,7 +1070,7 @@ async def get_workflows(
         "x-fern-sdk-method-name": "get_workflow_templates",
     },
 )
-@base_router.get(
+@legacy_base_router.get(
     "/workflows/templates/",
     response_model=list[Workflow],
     include_in_schema=False,
@@ -1069,7 +1089,7 @@ async def get_workflow_templates() -> list[Workflow]:
     return workflows
 
 
-@base_router.get(
+@legacy_base_router.get(
     "/workflows/{workflow_permanent_id}",
     response_model=Workflow,
     tags=["agent"],
@@ -1078,7 +1098,7 @@ async def get_workflow_templates() -> list[Workflow]:
         "x-fern-sdk-method-name": "get_workflow",
     },
 )
-@base_router.get("/workflows/{workflow_permanent_id}/", response_model=Workflow, include_in_schema=False)
+@legacy_base_router.get("/workflows/{workflow_permanent_id}/", response_model=Workflow, include_in_schema=False)
 async def get_workflow(
     workflow_permanent_id: str,
     version: int | None = None,
@@ -1097,7 +1117,7 @@ async def get_workflow(
     )
 
 
-@base_router.post(
+@legacy_base_router.post(
     "/suggest/{ai_suggestion_type}",
     include_in_schema=False,
     tags=["agent"],
@@ -1106,7 +1126,7 @@ async def get_workflow(
         "x-fern-sdk-method-name": "suggest",
     },
 )
-@base_router.post("/suggest/{ai_suggestion_type}/", include_in_schema=False)
+@legacy_base_router.post("/suggest/{ai_suggestion_type}/", include_in_schema=False)
 async def suggest(
     ai_suggestion_type: AISuggestionType,
     data: AISuggestionRequest,
@@ -1135,7 +1155,7 @@ async def suggest(
         raise HTTPException(status_code=400, detail="Failed to suggest data schema. Please try again later.")
 
 
-@base_router.post(
+@legacy_base_router.post(
     "/generate/task",
     tags=["agent"],
     openapi_extra={
@@ -1143,67 +1163,19 @@ async def suggest(
         "x-fern-sdk-method-name": "generate_task",
     },
 )
-@base_router.post("/generate/task/", include_in_schema=False)
+@legacy_base_router.post("/generate/task/", include_in_schema=False)
 async def generate_task(
     data: GenerateTaskRequest,
     current_org: Organization = Depends(org_auth_service.get_current_org),
 ) -> TaskGeneration:
-    user_prompt = data.prompt
-    hash_object = hashlib.sha256()
-    hash_object.update(user_prompt.encode("utf-8"))
-    user_prompt_hash = hash_object.hexdigest()
-    # check if there's a same user_prompt within the past x Hours
-    # in the future, we can use vector db to fetch similar prompts
-    existing_task_generation = await app.DATABASE.get_task_generation_by_prompt_hash(
-        user_prompt_hash=user_prompt_hash, query_window_hours=settings.PROMPT_CACHE_WINDOW_HOURS
+    analytics.capture("skyvern-oss-agent-generate-task")
+    return await task_v1_service.generate_task(
+        user_prompt=data.prompt,
+        organization=current_org,
     )
-    if existing_task_generation:
-        new_task_generation = await app.DATABASE.create_task_generation(
-            organization_id=current_org.organization_id,
-            user_prompt=data.prompt,
-            user_prompt_hash=user_prompt_hash,
-            url=existing_task_generation.url,
-            navigation_goal=existing_task_generation.navigation_goal,
-            navigation_payload=existing_task_generation.navigation_payload,
-            data_extraction_goal=existing_task_generation.data_extraction_goal,
-            extracted_information_schema=existing_task_generation.extracted_information_schema,
-            llm=existing_task_generation.llm,
-            llm_prompt=existing_task_generation.llm_prompt,
-            llm_response=existing_task_generation.llm_response,
-            source_task_generation_id=existing_task_generation.task_generation_id,
-        )
-        return new_task_generation
-
-    llm_prompt = prompt_engine.load_prompt("generate-task", user_prompt=data.prompt)
-    try:
-        llm_response = await app.LLM_API_HANDLER(prompt=llm_prompt, prompt_name="generate-task")
-        parsed_task_generation_obj = TaskGenerationBase.model_validate(llm_response)
-
-        # generate a TaskGenerationModel
-        task_generation = await app.DATABASE.create_task_generation(
-            organization_id=current_org.organization_id,
-            user_prompt=data.prompt,
-            user_prompt_hash=user_prompt_hash,
-            url=parsed_task_generation_obj.url,
-            navigation_goal=parsed_task_generation_obj.navigation_goal,
-            navigation_payload=parsed_task_generation_obj.navigation_payload,
-            data_extraction_goal=parsed_task_generation_obj.data_extraction_goal,
-            extracted_information_schema=parsed_task_generation_obj.extracted_information_schema,
-            suggested_title=parsed_task_generation_obj.suggested_title,
-            llm=settings.LLM_KEY,
-            llm_prompt=llm_prompt,
-            llm_response=str(llm_response),
-        )
-        return task_generation
-    except LLMProviderError:
-        LOG.error("Failed to generate task", exc_info=True)
-        raise HTTPException(status_code=400, detail="Failed to generate task. Please try again later.")
-    except OperationalError:
-        LOG.error("Database error when generating task", exc_info=True, user_prompt=data.prompt)
-        raise HTTPException(status_code=500, detail="Failed to generate task. Please try again later.")
 
 
-@base_router.put(
+@legacy_base_router.put(
     "/organizations",
     tags=["server"],
     openapi_extra={
@@ -1211,7 +1183,7 @@ async def generate_task(
         "x-fern-sdk-method-name": "update_organization",
     },
 )
-@base_router.put(
+@legacy_base_router.put(
     "/organizations",
     include_in_schema=False,
 )
@@ -1225,7 +1197,7 @@ async def update_organization(
     )
 
 
-@base_router.get(
+@legacy_base_router.get(
     "/organizations",
     tags=["server"],
     openapi_extra={
@@ -1233,7 +1205,7 @@ async def update_organization(
         "x-fern-sdk-method-name": "get_organizations",
     },
 )
-@base_router.get(
+@legacy_base_router.get(
     "/organizations/",
     include_in_schema=False,
 )
@@ -1243,7 +1215,7 @@ async def get_organizations(
     return GetOrganizationsResponse(organizations=[current_org])
 
 
-@base_router.get(
+@legacy_base_router.get(
     "/organizations/{organization_id}/apikeys/",
     tags=["server"],
     openapi_extra={
@@ -1251,7 +1223,7 @@ async def get_organizations(
         "x-fern-sdk-method-name": "get_api_keys",
     },
 )
-@base_router.get(
+@legacy_base_router.get(
     "/organizations/{organization_id}/apikeys",
     include_in_schema=False,
 )
@@ -1284,7 +1256,7 @@ async def _validate_file_size(file: UploadFile) -> UploadFile:
     return file
 
 
-@base_router.post(
+@legacy_base_router.post(
     "/upload_file",
     tags=["server"],
     openapi_extra={
@@ -1292,7 +1264,7 @@ async def _validate_file_size(file: UploadFile) -> UploadFile:
         "x-fern-sdk-method-name": "upload_file",
     },
 )
-@base_router.post(
+@legacy_base_router.post(
     "/upload_file/",
     include_in_schema=False,
 )
@@ -1337,7 +1309,7 @@ async def upload_file(
     )
 
 
-@v2_router.post(
+@legacy_v2_router.post(
     "/tasks",
     tags=["agent"],
     openapi_extra={
@@ -1345,7 +1317,7 @@ async def upload_file(
         "x-fern-sdk-method-name": "run_task_v2",
     },
 )
-@v2_router.post(
+@legacy_v2_router.post(
     "/tasks/",
     include_in_schema=False,
 )
@@ -1396,7 +1368,7 @@ async def run_task_v2(
     return task_v2.model_dump(by_alias=True)
 
 
-@v2_router.get(
+@legacy_v2_router.get(
     "/tasks/{task_id}",
     tags=["agent"],
     openapi_extra={
@@ -1404,7 +1376,7 @@ async def run_task_v2(
         "x-fern-sdk-method-name": "get_task_v2",
     },
 )
-@v2_router.get(
+@legacy_v2_router.get(
     "/tasks/{task_id}/",
     include_in_schema=False,
 )
@@ -1416,102 +1388,6 @@ async def get_task_v2(
     if not task_v2:
         raise HTTPException(status_code=404, detail=f"Task v2 {task_id} not found")
     return task_v2.model_dump(by_alias=True)
-
-
-@base_router.get(
-    "/browser_sessions/{browser_session_id}",
-    response_model=BrowserSessionResponse,
-    tags=["browser"],
-    openapi_extra={
-        "x-fern-sdk-group-name": "browser",
-        "x-fern-sdk-method-name": "get_browser_session",
-    },
-)
-@base_router.get(
-    "/browser_sessions/{browser_session_id}/",
-    response_model=BrowserSessionResponse,
-    include_in_schema=False,
-)
-async def get_browser_session(
-    browser_session_id: str,
-    current_org: Organization = Depends(org_auth_service.get_current_org),
-) -> BrowserSessionResponse:
-    analytics.capture("skyvern-oss-agent-workflow-run-get")
-    browser_session = await app.PERSISTENT_SESSIONS_MANAGER.get_session(
-        browser_session_id,
-        current_org.organization_id,
-    )
-    if not browser_session:
-        raise HTTPException(status_code=404, detail=f"Browser session {browser_session_id} not found")
-    return BrowserSessionResponse.from_browser_session(browser_session)
-
-
-@base_router.get(
-    "/browser_sessions",
-    response_model=list[BrowserSessionResponse],
-    tags=["browser"],
-    openapi_extra={
-        "x-fern-sdk-group-name": "browser",
-        "x-fern-sdk-method-name": "get_browser_sessions",
-    },
-)
-@base_router.get(
-    "/browser_sessions/",
-    response_model=list[BrowserSessionResponse],
-    include_in_schema=False,
-)
-async def get_browser_sessions(
-    current_org: Organization = Depends(org_auth_service.get_current_org),
-) -> list[BrowserSessionResponse]:
-    """Get all active browser sessions for the organization"""
-    analytics.capture("skyvern-oss-agent-browser-sessions-get")
-    browser_sessions = await app.PERSISTENT_SESSIONS_MANAGER.get_active_sessions(current_org.organization_id)
-    return [BrowserSessionResponse.from_browser_session(browser_session) for browser_session in browser_sessions]
-
-
-@base_router.post(
-    "/browser_sessions",
-    response_model=BrowserSessionResponse,
-    tags=["browser"],
-    openapi_extra={
-        "x-fern-sdk-group-name": "browser",
-        "x-fern-sdk-method-name": "create_browser_session",
-    },
-)
-@base_router.post(
-    "/browser_sessions/",
-    response_model=BrowserSessionResponse,
-    include_in_schema=False,
-)
-async def create_browser_session(
-    current_org: Organization = Depends(org_auth_service.get_current_org),
-) -> BrowserSessionResponse:
-    browser_session = await app.PERSISTENT_SESSIONS_MANAGER.create_session(current_org.organization_id)
-    return BrowserSessionResponse.from_browser_session(browser_session)
-
-
-@base_router.post(
-    "/browser_sessions/{session_id}/close",
-    tags=["browser"],
-    openapi_extra={
-        "x-fern-sdk-group-name": "browser",
-        "x-fern-sdk-method-name": "close_browser_session",
-    },
-)
-@base_router.post(
-    "/browser_sessions/{session_id}/close/",
-    include_in_schema=False,
-)
-async def close_browser_session(
-    session_id: str,
-    current_org: Organization = Depends(org_auth_service.get_current_org),
-) -> ORJSONResponse:
-    await app.PERSISTENT_SESSIONS_MANAGER.close_session(current_org.organization_id, session_id)
-    return ORJSONResponse(
-        content={"message": "Browser session closed"},
-        status_code=200,
-        media_type="application/json",
-    )
 
 
 async def _flatten_workflow_run_timeline(organization_id: str, workflow_run_id: str) -> list[WorkflowRunTimeline]:
@@ -1561,3 +1437,232 @@ async def _flatten_workflow_run_timeline(organization_id: str, workflow_run_id: 
         final_workflow_run_block_timeline.extend(thought_timeline)
     final_workflow_run_block_timeline.sort(key=lambda x: x.created_at, reverse=True)
     return final_workflow_run_block_timeline
+
+
+@base_router.post(
+    "/run/tasks",
+    tags=["Agent"],
+    openapi_extra={
+        "x-fern-sdk-group-name": "agent",
+        "x-fern-sdk-method-name": "run_task",
+    },
+    description="Run a task",
+    summary="Run a task",
+    responses={
+        200: {"description": "Successfully run task"},
+        400: {"description": "Invalid agent engine"},
+    },
+)
+@base_router.post("/run/tasks/", include_in_schema=False)
+async def run_task(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    run_request: TaskRunRequest,
+    current_org: Organization = Depends(org_auth_service.get_current_org),
+    x_api_key: Annotated[str | None, Header()] = None,
+    x_user_agent: Annotated[str | None, Header()] = None,
+) -> TaskRunResponse:
+    analytics.capture("skyvern-oss-run-task", data={"url": run_request.url})
+    await PermissionCheckerFactory.get_instance().check(current_org, browser_session_id=run_request.browser_session_id)
+
+    if run_request.engine == RunEngine.skyvern_v1:
+        # create task v1
+        # if there's no url, call task generation first to generate the url, data schema if any
+        url = run_request.url
+        data_extraction_goal = None
+        data_extraction_schema = run_request.data_extraction_schema
+        navigation_goal = run_request.prompt
+        navigation_payload = None
+        task_generation = await task_v1_service.generate_task(
+            user_prompt=run_request.prompt,
+            organization=current_org,
+        )
+        url = url or task_generation.url
+        navigation_goal = task_generation.navigation_goal or run_request.prompt
+        navigation_payload = task_generation.navigation_payload
+        data_extraction_goal = task_generation.data_extraction_goal
+        data_extraction_schema = data_extraction_schema or task_generation.extracted_information_schema
+
+        task_v1_request = TaskRequest(
+            title=run_request.title,
+            url=url,
+            navigation_goal=navigation_goal,
+            navigation_payload=navigation_payload,
+            data_extraction_goal=data_extraction_goal,
+            extracted_information_schema=data_extraction_schema,
+            error_code_mapping=run_request.error_code_mapping,
+            proxy_location=run_request.proxy_location,
+            browser_session_id=run_request.browser_session_id,
+        )
+        task_v1_response = await task_v1_service.run_task(
+            task=task_v1_request,
+            organization=current_org,
+            x_max_steps_override=run_request.max_steps,
+            x_api_key=x_api_key,
+            request=request,
+            background_tasks=background_tasks,
+        )
+        # build the task run response
+        return TaskRunResponse(
+            run_id=task_v1_response.task_id,
+            run_type=RunType.task_v1,
+            status=str(task_v1_response.status),
+            output=task_v1_response.extracted_information,
+            failure_reason=task_v1_response.failure_reason,
+            created_at=task_v1_response.created_at,
+            modified_at=task_v1_response.modified_at,
+            run_request=TaskRunRequest(
+                engine=RunEngine.skyvern_v1,
+                prompt=task_v1_response.navigation_goal,
+                url=task_v1_response.url,
+                webhook_url=task_v1_response.webhook_callback_url,
+                totp_identifier=task_v1_response.totp_identifier,
+                totp_url=task_v1_response.totp_verification_url,
+                proxy_location=task_v1_response.proxy_location,
+                max_steps=task_v1_response.max_steps_per_run,
+                data_extraction_schema=task_v1_response.extracted_information_schema,
+                error_code_mapping=task_v1_response.error_code_mapping,
+                browser_session_id=run_request.browser_session_id,
+            ),
+        )
+    if run_request.engine == RunEngine.skyvern_v2:
+        # create task v2
+        try:
+            task_v2 = await task_v2_service.initialize_task_v2(
+                organization=current_org,
+                user_prompt=run_request.prompt,
+                user_url=run_request.url,
+                totp_identifier=run_request.totp_identifier,
+                totp_verification_url=run_request.totp_url,
+                webhook_callback_url=run_request.webhook_url,
+                proxy_location=run_request.proxy_location,
+                publish_workflow=run_request.publish_workflow,
+                extracted_information_schema=run_request.data_extraction_schema,
+                error_code_mapping=run_request.error_code_mapping,
+                create_task_run=True,
+            )
+        except LLMProviderError:
+            LOG.error("LLM failure to initialize task v2", exc_info=True)
+            raise HTTPException(
+                status_code=500, detail="Skyvern LLM failure to initialize task v2. Please try again later."
+            )
+        await AsyncExecutorFactory.get_executor().execute_task_v2(
+            request=request,
+            background_tasks=background_tasks,
+            organization_id=current_org.organization_id,
+            task_v2_id=task_v2.observer_cruise_id,
+            max_steps_override=run_request.max_steps,
+            browser_session_id=run_request.browser_session_id,
+        )
+        return TaskRunResponse(
+            run_id=task_v2.observer_cruise_id,
+            run_type=RunType.task_v2,
+            status=str(task_v2.status),
+            output=task_v2.output,
+            failure_reason=None,
+            created_at=task_v2.created_at,
+            modified_at=task_v2.modified_at,
+            run_request=TaskRunRequest(
+                engine=RunEngine.skyvern_v2,
+                prompt=task_v2.prompt,
+                url=task_v2.url,
+                webhook_url=task_v2.webhook_callback_url,
+                totp_identifier=task_v2.totp_identifier,
+                totp_url=task_v2.totp_verification_url,
+                proxy_location=task_v2.proxy_location,
+                max_steps=run_request.max_steps,
+                browser_session_id=run_request.browser_session_id,
+                error_code_mapping=task_v2.error_code_mapping,
+                data_extraction_schema=task_v2.extracted_information_schema,
+                publish_workflow=run_request.publish_workflow,
+            ),
+        )
+    raise HTTPException(status_code=400, detail=f"Invalid agent engine: {run_request.engine}")
+
+
+@base_router.post(
+    "/run/workflows",
+    tags=["Agent"],
+    openapi_extra={
+        "x-fern-sdk-group-name": "agent",
+        "x-fern-sdk-method-name": "run_workflow",
+    },
+    description="Run a workflow",
+    summary="Run a workflow",
+    responses={
+        200: {"description": "Successfully run workflow"},
+        400: {"description": "Invalid workflow run request"},
+    },
+)
+@base_router.post("/run/workflows/", include_in_schema=False)
+async def run_workflow(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    workflow_run_request: WorkflowRunRequest,
+    current_org: Organization = Depends(org_auth_service.get_current_org),
+    template: bool = Query(False),
+    x_api_key: Annotated[str | None, Header()] = None,
+    x_max_steps_override: Annotated[int | None, Header()] = None,
+    x_user_agent: Annotated[str | None, Header()] = None,
+) -> WorkflowRunResponse:
+    analytics.capture("skyvern-oss-run-workflow")
+    await PermissionCheckerFactory.get_instance().check(
+        current_org, browser_session_id=workflow_run_request.browser_session_id
+    )
+    workflow_id = workflow_run_request.workflow_id
+    context = skyvern_context.ensure_context()
+    request_id = context.request_id
+    legacy_workflow_request = WorkflowRequestBody(
+        data=workflow_run_request.parameters,
+        proxy_location=workflow_run_request.proxy_location,
+        webhook_callback_url=workflow_run_request.webhook_url,
+        totp_identifier=workflow_run_request.totp_identifier,
+        totp_url=workflow_run_request.totp_url,
+        browser_session_id=workflow_run_request.browser_session_id,
+    )
+    workflow_run = await workflow_service.run_workflow(
+        workflow_id=workflow_id,
+        organization_id=current_org.organization_id,
+        workflow_request=legacy_workflow_request,
+        template=template,
+        version=None,
+        max_steps=x_max_steps_override,
+        api_key=x_api_key,
+        request_id=request_id,
+        request=request,
+        background_tasks=background_tasks,
+    )
+
+    return WorkflowRunResponse(
+        run_id=workflow_run.workflow_run_id,
+        run_type=RunType.workflow_run,
+        status=str(workflow_run.status),
+        output=None,
+        failure_reason=workflow_run.failure_reason,
+        created_at=workflow_run.created_at,
+        modified_at=workflow_run.modified_at,
+        run_request=workflow_run_request,
+        downloaded_files=None,
+        recording_url=None,
+    )
+
+
+@base_router.post(
+    "/runs/{run_id}/cancel",
+    tags=["Agent"],
+    openapi_extra={
+        "x-fern-sdk-group-name": "agent",
+        "x-fern-sdk-method-name": "cancel_run",
+    },
+    description="Cancel a task or workflow run",
+    summary="Cancel a task or workflow run",
+)
+@base_router.post("/runs/{run_id}/cancel/", include_in_schema=False)
+async def cancel_run(
+    run_id: str = Path(..., description="The id of the task run or the workflow run to cancel."),
+    current_org: Organization = Depends(org_auth_service.get_current_org),
+    x_api_key: Annotated[str | None, Header()] = None,
+) -> None:
+    analytics.capture("skyvern-oss-agent-cancel-run")
+
+    await run_service.cancel_run(run_id, organization_id=current_org.organization_id, api_key=x_api_key)

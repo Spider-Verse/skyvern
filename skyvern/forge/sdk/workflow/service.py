@@ -25,7 +25,7 @@ from skyvern.forge.sdk.db.enums import TaskType
 from skyvern.forge.sdk.models import Step, StepStatus
 from skyvern.forge.sdk.schemas.files import FileInfo
 from skyvern.forge.sdk.schemas.organizations import Organization
-from skyvern.forge.sdk.schemas.tasks import ProxyLocation, Task
+from skyvern.forge.sdk.schemas.tasks import Task
 from skyvern.forge.sdk.schemas.workflow_runs import WorkflowRunBlock, WorkflowRunTimeline, WorkflowRunTimelineType
 from skyvern.forge.sdk.workflow.exceptions import (
     ContextParameterSourceNotDefined,
@@ -80,7 +80,7 @@ from skyvern.forge.sdk.workflow.models.workflow import (
     WorkflowRun,
     WorkflowRunOutputParameter,
     WorkflowRunParameter,
-    WorkflowRunResponse,
+    WorkflowRunResponseBase,
     WorkflowRunStatus,
     WorkflowStatus,
 )
@@ -90,6 +90,7 @@ from skyvern.forge.sdk.workflow.models.yaml import (
     WorkflowCreateYAMLRequest,
     WorkflowDefinitionYAML,
 )
+from skyvern.schemas.runs import ProxyLocation
 from skyvern.webeye.browser_factory import BrowserState
 
 LOG = structlog.get_logger()
@@ -957,7 +958,7 @@ class WorkflowService:
         workflow_run_id: str,
         organization_id: str,
         include_cost: bool = False,
-    ) -> WorkflowRunResponse:
+    ) -> WorkflowRunResponseBase:
         workflow_run = await self.get_workflow_run(workflow_run_id=workflow_run_id, organization_id=organization_id)
         if workflow_run is None:
             LOG.error(f"Workflow run {workflow_run_id} not found")
@@ -976,7 +977,7 @@ class WorkflowService:
         workflow_run_id: str,
         organization_id: str,
         include_cost: bool = False,
-    ) -> WorkflowRunResponse:
+    ) -> WorkflowRunResponseBase:
         workflow = await self.get_workflow_by_permanent_id(workflow_permanent_id)
         if workflow is None:
             LOG.error(f"Workflow {workflow_permanent_id} not found")
@@ -1072,7 +1073,7 @@ class WorkflowService:
             # successful steps are the ones that have a status of completed and the total count of unique step.order
             successful_steps = [step for step in workflow_run_steps if step.status == StepStatus.completed]
             total_cost = 0.1 * (len(successful_steps) + len(text_prompt_blocks))
-        return WorkflowRunResponse(
+        return WorkflowRunResponseBase(
             workflow_id=workflow.workflow_permanent_id,
             workflow_run_id=workflow_run_id,
             status=workflow_run.status,
@@ -1959,6 +1960,7 @@ class WorkflowService:
             if block.parent_workflow_run_block_id:
                 if block.parent_workflow_run_block_id in block_map:
                     block_map[block.parent_workflow_run_block_id].children.append(workflow_run_timeline)
+                    block_map[block.workflow_run_block_id] = workflow_run_timeline
                 else:
                     # put the block back to the queue
                     workflow_run_blocks.append(block)

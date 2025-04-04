@@ -3,16 +3,18 @@ from enum import StrEnum
 from typing import Any, List
 
 from pydantic import BaseModel, field_validator
+from typing_extensions import deprecated
 
-from skyvern.forge.sdk.core.validators import validate_url
 from skyvern.forge.sdk.schemas.files import FileInfo
 from skyvern.forge.sdk.schemas.task_v2 import TaskV2
-from skyvern.forge.sdk.schemas.tasks import ProxyLocation
 from skyvern.forge.sdk.workflow.exceptions import WorkflowDefinitionHasDuplicateBlockLabels
 from skyvern.forge.sdk.workflow.models.block import BlockTypeVar
 from skyvern.forge.sdk.workflow.models.parameter import PARAMETER_TYPE
+from skyvern.schemas.runs import ProxyLocation
+from skyvern.utils.url_validators import validate_url
 
 
+@deprecated("Use WorkflowRunRequest instead")
 class WorkflowRequestBody(BaseModel):
     data: dict[str, Any] | None = None
     proxy_location: ProxyLocation | None = None
@@ -29,6 +31,7 @@ class WorkflowRequestBody(BaseModel):
         return validate_url(url)
 
 
+@deprecated("Use WorkflowRunResponse instead")
 class RunWorkflowResponse(BaseModel):
     workflow_id: str
     workflow_run_id: str
@@ -130,7 +133,7 @@ class WorkflowRunOutputParameter(BaseModel):
     created_at: datetime
 
 
-class WorkflowRunResponse(BaseModel):
+class WorkflowRunResponseBase(BaseModel):
     workflow_id: str
     workflow_run_id: str
     status: WorkflowRunStatus

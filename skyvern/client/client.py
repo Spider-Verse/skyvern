@@ -4,11 +4,11 @@ import typing
 from .environment import SkyvernEnvironment
 import httpx
 from .core.client_wrapper import SyncClientWrapper
-from .server.client import ServerClient
 from .agent.client import AgentClient
+from .browser_session.client import BrowserSessionClient
 from .core.client_wrapper import AsyncClientWrapper
-from .server.client import AsyncServerClient
 from .agent.client import AsyncAgentClient
+from .browser_session.client import AsyncBrowserSessionClient
 
 
 class Skyvern:
@@ -29,6 +29,8 @@ class Skyvern:
 
 
 
+    api_key : typing.Optional[str]
+    authorization : typing.Optional[str]
     timeout : typing.Optional[float]
         The timeout to be used, in seconds, for requests. By default the timeout is 60 seconds, unless a custom httpx client is used, in which case this default is not enforced.
 
@@ -40,9 +42,12 @@ class Skyvern:
 
     Examples
     --------
-    from skyverndocs import Skyvern
+    from skyvern import Skyvern
 
-    client = Skyvern()
+    client = Skyvern(
+        api_key="YOUR_API_KEY",
+        authorization="YOUR_AUTHORIZATION",
+    )
     """
 
     def __init__(
@@ -50,6 +55,8 @@ class Skyvern:
         *,
         base_url: typing.Optional[str] = None,
         environment: SkyvernEnvironment = SkyvernEnvironment.PRODUCTION,
+        api_key: typing.Optional[str] = None,
+        authorization: typing.Optional[str] = None,
         timeout: typing.Optional[float] = None,
         follow_redirects: typing.Optional[bool] = True,
         httpx_client: typing.Optional[httpx.Client] = None,
@@ -57,6 +64,8 @@ class Skyvern:
         _defaulted_timeout = timeout if timeout is not None else 60 if httpx_client is None else None
         self._client_wrapper = SyncClientWrapper(
             base_url=_get_base_url(base_url=base_url, environment=environment),
+            api_key=api_key,
+            authorization=authorization,
             httpx_client=httpx_client
             if httpx_client is not None
             else httpx.Client(timeout=_defaulted_timeout, follow_redirects=follow_redirects)
@@ -64,8 +73,8 @@ class Skyvern:
             else httpx.Client(timeout=_defaulted_timeout),
             timeout=_defaulted_timeout,
         )
-        self.server = ServerClient(client_wrapper=self._client_wrapper)
         self.agent = AgentClient(client_wrapper=self._client_wrapper)
+        self.browser_session = BrowserSessionClient(client_wrapper=self._client_wrapper)
 
 
 class AsyncSkyvern:
@@ -86,6 +95,8 @@ class AsyncSkyvern:
 
 
 
+    api_key : typing.Optional[str]
+    authorization : typing.Optional[str]
     timeout : typing.Optional[float]
         The timeout to be used, in seconds, for requests. By default the timeout is 60 seconds, unless a custom httpx client is used, in which case this default is not enforced.
 
@@ -97,9 +108,12 @@ class AsyncSkyvern:
 
     Examples
     --------
-    from skyverndocs import AsyncSkyvern
+    from skyvern import AsyncSkyvern
 
-    client = AsyncSkyvern()
+    client = AsyncSkyvern(
+        api_key="YOUR_API_KEY",
+        authorization="YOUR_AUTHORIZATION",
+    )
     """
 
     def __init__(
@@ -107,6 +121,8 @@ class AsyncSkyvern:
         *,
         base_url: typing.Optional[str] = None,
         environment: SkyvernEnvironment = SkyvernEnvironment.PRODUCTION,
+        api_key: typing.Optional[str] = None,
+        authorization: typing.Optional[str] = None,
         timeout: typing.Optional[float] = None,
         follow_redirects: typing.Optional[bool] = True,
         httpx_client: typing.Optional[httpx.AsyncClient] = None,
@@ -114,6 +130,8 @@ class AsyncSkyvern:
         _defaulted_timeout = timeout if timeout is not None else 60 if httpx_client is None else None
         self._client_wrapper = AsyncClientWrapper(
             base_url=_get_base_url(base_url=base_url, environment=environment),
+            api_key=api_key,
+            authorization=authorization,
             httpx_client=httpx_client
             if httpx_client is not None
             else httpx.AsyncClient(timeout=_defaulted_timeout, follow_redirects=follow_redirects)
@@ -121,8 +139,8 @@ class AsyncSkyvern:
             else httpx.AsyncClient(timeout=_defaulted_timeout),
             timeout=_defaulted_timeout,
         )
-        self.server = AsyncServerClient(client_wrapper=self._client_wrapper)
         self.agent = AsyncAgentClient(client_wrapper=self._client_wrapper)
+        self.browser_session = AsyncBrowserSessionClient(client_wrapper=self._client_wrapper)
 
 
 def _get_base_url(*, base_url: typing.Optional[str] = None, environment: SkyvernEnvironment) -> str:

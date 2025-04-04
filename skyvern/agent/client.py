@@ -1,18 +1,6 @@
-from enum import StrEnum
-from typing import Any
-
-import httpx
-
+from skyvern.client.client import AsyncSkyvern
 from skyvern.config import settings
-from skyvern.exceptions import SkyvernClientException
-from skyvern.forge.sdk.schemas.task_runs import TaskRunResponse
-from skyvern.forge.sdk.schemas.tasks import ProxyLocation
-from skyvern.forge.sdk.workflow.models.workflow import RunWorkflowResponse, WorkflowRunResponse
-
-
-class RunEngine(StrEnum):
-    skyvern_v1 = "skyvern-1.0"
-    skyvern_v2 = "skyvern-2.0"
+from skyvern.schemas.runs import ProxyLocation, RunEngine, RunResponse, RunType, TaskRunResponse, WorkflowRunResponse
 
 
 class SkyvernClient:
@@ -20,28 +8,49 @@ class SkyvernClient:
         self,
         base_url: str = settings.SKYVERN_BASE_URL,
         api_key: str = settings.SKYVERN_API_KEY,
+        extra_headers: dict[str, str] | None = None,
     ) -> None:
         self.base_url = base_url
         self.api_key = api_key
+        self.client = AsyncSkyvern(base_url=base_url, api_key=api_key)
+        self.extra_headers = extra_headers or {}
+        self.user_agent = None
+        if "X-User-Agent" in self.extra_headers:
+            self.user_agent = self.extra_headers["X-User-Agent"]
+        elif "x-user-agent" in self.extra_headers:
+            self.user_agent = self.extra_headers["x-user-agent"]
 
     async def run_task(
         self,
-        goal: str,
-        engine: RunEngine = RunEngine.skyvern_v1,
+        prompt: str,
         url: str | None = None,
+        title: str | None = None,
+        engine: RunEngine = RunEngine.skyvern_v2,
         webhook_url: str | None = None,
         totp_identifier: str | None = None,
         totp_url: str | None = None,
-        title: str | None = None,
         error_code_mapping: dict[str, str] | None = None,
         proxy_location: ProxyLocation | None = None,
         max_steps: int | None = None,
+        browser_session_id: str | None = None,
+        publish_workflow: bool = False,
     ) -> TaskRunResponse:
-        if engine == RunEngine.skyvern_v1:
-            return TaskRunResponse()
-        elif engine == RunEngine.skyvern_v2:
-            return TaskRunResponse()
-        raise ValueError(f"Invalid engine: {engine}")
+        task_run_obj = await self.client.agent.run_task(
+            prompt=prompt,
+            url=url,
+            title=title,
+            engine=engine,
+            webhook_url=webhook_url,
+            totp_identifier=totp_identifier,
+            totp_url=totp_url,
+            error_code_mapping=error_code_mapping,
+            proxy_location=proxy_location,
+            max_steps=max_steps,
+            browser_session_id=browser_session_id,
+            publish_workflow=publish_workflow,
+            user_agent=self.user_agent,
+        )
+        return TaskRunResponse.model_validate(task_run_obj.dict())
 
     async def run_workflow(
         self,
@@ -51,47 +60,29 @@ class SkyvernClient:
         proxy_location: ProxyLocation | None = None,
         totp_identifier: str | None = None,
         totp_url: str | None = None,
-    ) -> RunWorkflowResponse:
-        data: dict[str, Any] = {
-            "webhook_callback_url": webhook_url,
-            "proxy_location": proxy_location,
-            "totp_identifier": totp_identifier,
-            "totp_url": totp_url,
-        }
-        if workflow_input:
-            data["data"] = workflow_input
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{self.base_url}/api/v1/workflows/{workflow_id}/run",
-                headers={"x-api-key": self.api_key},
-                json=data,
-            )
-            if response.status_code != 200:
-                raise SkyvernClientException(
-                    f"Failed to run workflow: {response.text}",
-                    status_code=response.status_code,
-                )
-            return RunWorkflowResponse.model_validate(response.json())
+        browser_session_id: str | None = None,
+        template: bool = False,
+    ) -> WorkflowRunResponse:
+        workflow_run_obj = await self.client.agent.run_workflow(
+            workflow_id=workflow_id,
+            data=workflow_input,
+            webhook_callback_url=webhook_url,
+            proxy_location=proxy_location,
+            totp_identifier=totp_identifier,
+            totp_url=totp_url,
+            browser_session_id=browser_session_id,
+            template=template,
+            user_agent=self.user_agent,
+        )
+        return WorkflowRunResponse.model_validate(workflow_run_obj.dict())
 
     async def get_run(
         self,
         run_id: str,
-    ) -> TaskRunResponse:
-        return TaskRunResponse()
-
-    async def get_workflow_run(
-        self,
-        workflow_run_id: str,
-    ) -> WorkflowRunResponse:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"{self.base_url}/api/v1/workflows/runs/{workflow_run_id}",
-                headers={"x-api-key": self.api_key},
-                timeout=60,
-            )
-            if response.status_code != 200:
-                raise SkyvernClientException(
-                    f"Failed to get workflow run: {response.text}",
-                    status_code=response.status_code,
-                )
-            return WorkflowRunResponse.model_validate(response.json())
+    ) -> RunResponse:
+        run_obj = await self.client.agent.get_run(run_id=run_id)
+        if run_obj.run_type in [RunType.task_v1, RunType.task_v2]:
+            return TaskRunResponse.model_validate(run_obj.dict())
+        elif run_obj.run_type == RunType.workflow_run:
+            return WorkflowRunResponse.model_validate(run_obj.dict())
+        raise ValueError(f"Invalid run type: {run_obj.run_type}")

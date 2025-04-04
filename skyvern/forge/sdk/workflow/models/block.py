@@ -30,7 +30,6 @@ from skyvern.config import settings
 from skyvern.constants import GET_DOWNLOADED_FILES_TIMEOUT, MAX_UPLOAD_FILE_COUNT
 from skyvern.exceptions import (
     ContextParameterValueNotFound,
-    DisabledBlockExecutionError,
     MissingBrowserState,
     MissingBrowserStatePage,
     SkyvernException,
@@ -49,7 +48,6 @@ from skyvern.forge.sdk.api.files import (
 )
 from skyvern.forge.sdk.api.llm.api_handler_factory import LLMAPIHandlerFactory
 from skyvern.forge.sdk.artifact.models import ArtifactType
-from skyvern.forge.sdk.core.validators import prepend_scheme_and_validate_url
 from skyvern.forge.sdk.db.enums import TaskType
 from skyvern.forge.sdk.schemas.files import FileInfo
 from skyvern.forge.sdk.schemas.task_v2 import TaskV2Status
@@ -72,6 +70,7 @@ from skyvern.forge.sdk.workflow.models.parameter import (
     OutputParameter,
     WorkflowParameter,
 )
+from skyvern.utils.url_validators import prepend_scheme_and_validate_url
 from skyvern.webeye.browser_factory import BrowserState
 from skyvern.webeye.utils.page import SkyvernFrame
 
@@ -1192,8 +1191,7 @@ async def wrapper():
         browser_session_id: str | None = None,
         **kwargs: dict,
     ) -> BlockResult:
-        if not settings.ENABLE_CODE_BLOCK:
-            raise DisabledBlockExecutionError("CodeBlock is disabled")
+        await app.AGENT_FUNCTION.validate_code_block(organization_id=organization_id)
 
         # TODO: only support to use code block to manupilate the browser page
         # support browser context in the future
@@ -1698,9 +1696,17 @@ class FileUploadBlock(Block):
 
         s3_uris = []
         try:
+            workflow_run_context = self.get_workflow_run_context(workflow_run_id)
+            actual_aws_access_key_id = (
+                workflow_run_context.get_original_secret_value_or_none(self.aws_access_key_id) or self.aws_access_key_id
+            )
+            actual_aws_secret_access_key = (
+                workflow_run_context.get_original_secret_value_or_none(self.aws_secret_access_key)
+                or self.aws_secret_access_key
+            )
             client = AsyncAWSClient(
-                aws_access_key_id=self.aws_access_key_id,
-                aws_secret_access_key=self.aws_secret_access_key,
+                aws_access_key_id=actual_aws_access_key_id,
+                aws_secret_access_key=actual_aws_secret_access_key,
                 region_name=self.region_name,
             )
             # is the file path a file or a directory?
@@ -2417,8 +2423,8 @@ class TaskV2Block(Block):
         browser_session_id: str | None = None,
         **kwargs: dict,
     ) -> BlockResult:
-        from skyvern.forge.sdk.services import task_v2_service
         from skyvern.forge.sdk.workflow.models.workflow import WorkflowRunStatus
+        from skyvern.services import task_v2_service
 
         workflow_run_context = self.get_workflow_run_context(workflow_run_id)
         try:
@@ -2452,7 +2458,7 @@ class TaskV2Block(Block):
         if not workflow_run:
             raise ValueError(f"WorkflowRun not found {workflow_run_id} when running TaskV2Block")
         task_v2 = await task_v2_service.initialize_task_v2(
-            organization,
+            organization=organization,
             user_prompt=self.prompt,
             user_url=self.url,
             parent_workflow_run_id=workflow_run_id,
