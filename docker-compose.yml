@@ -12,6 +12,7 @@ services:
       - POSTGRES_USER=skyvern
       - POSTGRES_PASSWORD=skyvern
       - POSTGRES_DB=skyvern
+      - POSTGRES_HOST_AUTH_METHOD=trust
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U skyvern"]
       interval: 5s
