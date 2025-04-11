@@ -32,6 +32,10 @@ client = docker.from_env()
 container = client.containers.get('skyvern-postgres-1')
 
 
+# print(container.exec_run(f'psql -U skyvern -c "copy (select * from tasks) to stdout"').output.decode())
+print(container.exec_run(f'psql -U skyvern -c "copy (SELECT * FROM information_schema.columns WHERE table_name=\'steps\') to stdout"').output.decode())
+exit()
+
 with open('logins.csv', 'r+') as logins_file, open('tranco_Z2QWG_unique.csv') as tranco_file:
     seen = set(url for (url, *_) in csv.reader(logins_file))
     writer = csv.writer(logins_file)

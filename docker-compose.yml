@@ -3,8 +3,8 @@ services:
     image: postgres:14-alpine
     restart: always
     # comment out if you want to externally connect DB
-    ports:
-      - 5432:5432
+    # ports:
+    #   - 5432:5432
     volumes:
       - ./postgres-data:/var/lib/postgresql/data
     environment:
@@ -12,7 +12,6 @@ services:
       - POSTGRES_USER=skyvern
       - POSTGRES_PASSWORD=skyvern
       - POSTGRES_DB=skyvern
-      - POSTGRES_HOST_AUTH_METHOD=trust
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U skyvern"]
       interval: 5s
@@ -20,8 +19,7 @@ services:
       retries: 5
 
   skyvern:
-    # image: public.ecr.aws/skyvern/skyvern:latest
-    build: .
+    image: public.ecr.aws/skyvern/skyvern:latest
     restart: on-failure
     # comment out if you want to externally call skyvern API
     ports:
@@ -85,9 +83,7 @@ services:
       retries: 5
 
   skyvern-ui:
-    build:
-      dockerfile: Dockerfile.ui
-    # image: public.ecr.aws/skyvern/skyvern-ui:latest
+    image: public.ecr.aws/skyvern/skyvern-ui:latest
     restart: on-failure
     ports:
       - 8080:8080
@@ -104,9 +100,9 @@ services:
     #   A route for the API: api.yourdomain.com -> localhost:8000
     #   A route for the UI: yourdomain.com -> localhost:8080
     #   A route for the artifact API: artifact.yourdomain.com -> localhost:9090 (maybe not needed)
-      - VITE_WSS_BASE_URL=ws://localhost:8000/api/v1
-    #   - VITE_ARTIFACT_API_BASE_URL=http://localhost:9090
-    #   - VITE_API_BASE_URL=http://localhost:8000/api/v1
+      - VITE_WSS_BASE_URL=ws://netx9.cs.jhu.edu:8000/api/v1
+      - VITE_ARTIFACT_API_BASE_URL=http://netx9.cs.jhu.edu:9090
+      - VITE_API_BASE_URL=http://netx9.cs.jhu.edu:8000/api/v1
     #   - VITE_SKYVERN_API_KEY=<get this from "settings" in the Skyvern UI>
     depends_on:
       skyvern:
